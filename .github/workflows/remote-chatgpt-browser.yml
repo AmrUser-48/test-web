@@ -1,0 +1,105 @@
+name: Temporary remote ChatGPT browser
+
+on:
+  workflow_dispatch:
+    inputs:
+      session_minutes:
+        description: Session duration (runner limit is 6 hours)
+        required: true
+        type: choice
+        options:
+          - "30"
+          - "60"
+          - "180"
+          - "300"
+          - "350"
+        default: "350"
+
+permissions:
+  contents: read
+
+jobs:
+  remote-browser:
+    name: Start temporary browser desktop
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      BROWSER_ALLOWED_EMAIL: ${{ secrets.BROWSER_ALLOWED_EMAIL }}
+      SESSION_MINUTES: ${{ inputs.session_minutes }}
+    steps:
+      - name: Validate access email
+        shell: bash
+        run: |
+          if [[ -z "$BROWSER_ALLOWED_EMAIL" ]]; then
+            echo "::error::Add BROWSER_ALLOWED_EMAIL under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          if [[ ! "$BROWSER_ALLOWED_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]; then
+            echo "::error::BROWSER_ALLOWED_EMAIL is not a valid email address."
+            exit 1
+          fi
+          echo "::add-mask::$BROWSER_ALLOWED_EMAIL"
+
+      - name: Start disposable desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull lscr.io/linuxserver/webtop:ubuntu-xfce
+          docker run -d --name remote-chatgpt --shm-size=1g \
+            --security-opt seccomp=unconfined \
+            -e TZ=Etc/UTC \
+            -p 127.0.0.1:3000:3000 \
+            lscr.io/linuxserver/webtop:ubuntu-xfce
+          ready=0
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:3000/ >/dev/null; then ready=1; break; fi
+            sleep 5
+          done
+          if [[ "$ready" != 1 ]]; then
+            docker logs remote-chatgpt || true
+            echo "::error::Remote desktop did not start."
+            exit 1
+          fi
+
+      - name: Start email-protected HTTPS tunnel
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
+          chmod +x /tmp/cloudflared
+          nohup /tmp/cloudflared tunnel --url http://127.0.0.1:3000 \
+            --allowed-mail "$BROWSER_ALLOWED_EMAIL" --no-autoupdate \
+            >/tmp/cloudflared.log 2>&1 &
+          ready=0
+          for _ in $(seq 1 60); do
+            url="$(grep -Eo 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/cloudflared.log | head -n 1 || true)"
+            if [[ -n "$url" ]]; then ready=1; break; fi
+            sleep 2
+          done
+          if [[ "$ready" != 1 ]]; then
+            cat /tmp/cloudflared.log || true
+            echo "::error::Could not establish the Cloudflare tunnel."
+            exit 1
+          fi
+          {
+            echo "## Remote browser is ready"
+            echo
+            echo "$url"
+            echo
+            echo "Cloudflare will email a one-time PIN to the address configured in BROWSER_ALLOWED_EMAIL."
+            echo "Session automatically ends in $SESSION_MINUTES minutes. Cancel this workflow to stop it sooner."
+            echo
+            echo "Open the desktop, start the browser, and navigate to https://chatgpt.com."
+            echo "This runner is disposable. ChatGPT cookies and browser data are not persisted as artifacts."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Remote browser URL: $url"
+
+      - name: Keep session alive
+        shell: bash
+        run: sleep "$((SESSION_MINUTES * 60))"
+
+      - name: Remove desktop
+        if: always()
+        shell: bash
+        run: |
+          docker rm -f remote-chatgpt >/dev/null 2>&1 || true
