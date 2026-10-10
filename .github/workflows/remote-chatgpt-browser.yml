@@ -150,6 +150,7 @@ jobs:
                 httpCredentials: {
                   username: 'remote',
                   password: process.env.BROWSER_ACCESS_PASSWORD,
+                  origin: new URL(process.env.SELKIES_PUBLIC_URL).origin,
                   send: 'always'
                 },
                 viewport: { width: 1280, height: 800 }
