@@ -49,7 +49,7 @@ jobs:
             lscr.io/linuxserver/webtop:ubuntu-xfce
           ready=0
           for _ in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:3000/ >/dev/null; then ready=1; break; fi
+            if curl -fsS -u "remote:$BROWSER_ACCESS_PASSWORD" http://127.0.0.1:3000/ >/dev/null; then ready=1; break; fi
             sleep 5
           done
           if [[ "$ready" != 1 ]]; then
@@ -89,6 +89,17 @@ jobs:
             echo "This runner is disposable. ChatGPT cookies and browser data are not persisted as artifacts."
           } >> "$GITHUB_STEP_SUMMARY"
           echo "Remote browser URL: $url"
+          external_ready=0
+          for _ in $(seq 1 12); do
+            if curl --connect-timeout 5 --max-time 15 -fsS -u "remote:$BROWSER_ACCESS_PASSWORD" "$url/" >/dev/null; then external_ready=1; break; fi
+            sleep 5
+          done
+          if [[ "$external_ready" != 1 ]]; then
+            cat /tmp/cloudflared.log || true
+            echo "::error::Tunnel URL was allocated, but the protected desktop did not answer through Cloudflare."
+            exit 1
+          fi
+          echo "External HTTPS URL passed authenticated HTTP health check."
 
       - name: Keep session alive
         shell: bash
