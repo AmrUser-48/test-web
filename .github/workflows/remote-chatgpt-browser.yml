@@ -94,7 +94,7 @@ jobs:
             echo
             echo "$url"
             echo
-            echo "Browser authentication: username `remote`; password is the BROWSER_ACCESS_PASSWORD secret."
+            echo "Browser authentication: username remote; password is the BROWSER_ACCESS_PASSWORD secret."
             echo "Chromium is configured to open https://chatgpt.com automatically."
             echo "Session ends in $SESSION_MINUTES minutes; cancel this workflow to stop earlier."
           } >> "$GITHUB_STEP_SUMMARY"
@@ -115,20 +115,46 @@ jobs:
             exit 1
           fi
 
-          # Selkies uses /websocket for keyboard/mouse and stream signaling.
-          ws_status="$(curl --silent --show-error --max-time 5 --http1.1 -u "remote:$BROWSER_ACCESS_PASSWORD" \
-            -o /dev/null -w '%{http_code}' \
-            -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
-            -H 'Sec-WebSocket-Version: 13' \
-            -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
-            -H "Origin: $url" "$url/websocket" || true)"
-          echo "WebSocket handshake status: $ws_status"
-          if [[ "$ws_status" != "101" ]]; then
-            echo "::error::HTTP UI is reachable but Selkies WebSocket handshake did not return 101. The run log reports the status."
-            echo "The browser stream will not work until the WebSocket path is fixed."
+          # Diagnose both endpoint forms because current Selkies documentation describes both.
+          probe_ws() {
+            local base="$1" path="$2" output="$3"
+            curl --silent --show-error --max-time 6 --http1.1 -u "remote:$BROWSER_ACCESS_PASSWORD" \
+              -o "$output" -w '%{http_code}' \
+              -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+              -H 'Sec-WebSocket-Version: 13' \
+              -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+              -H "Origin: $base" "$base$path" || true
+          }
+
+          local_ws="$(probe_ws http://127.0.0.1:3000 /websocket /tmp/local-ws.body)"
+          local_api="$(probe_ws http://127.0.0.1:3000 /api/websockets /tmp/local-api.body)"
+          public_ws="$(probe_ws "$url" /websocket /tmp/public-ws.body)"
+          public_api="$(probe_ws "$url" /api/websockets /tmp/public-api.body)"
+          echo "WebSocket HTTP statuses: local /websocket=$local_ws; local /api/websockets=$local_api; public /websocket=$public_ws; public /api/websockets=$public_api"
+
+          if [[ "$public_ws" != "101" && "$public_api" != "101" ]]; then
+            echo "::error::Neither WebSocket endpoint upgraded through Cloudflare."
+            echo "--- Local /websocket response ---"
+            cat /tmp/local-ws.body || true
+            echo
+            echo "--- Local /api/websockets response ---"
+            cat /tmp/local-api.body || true
+            echo
+            echo "--- Public /websocket response ---"
+            cat /tmp/public-ws.body || true
+            echo
+            echo "--- Public /api/websockets response ---"
+            cat /tmp/public-api.body || true
+            echo
+            echo "--- Chromium/Selkies container logs ---"
+            docker logs --tail=200 remote-chatgpt || true
+            echo
+            echo "--- Cloudflare tunnel logs ---"
+            tail -100 /tmp/cloudflared.log || true
             exit 1
           fi
-          echo "External UI and WebSocket handshake passed."
+          echo "At least one documented WebSocket endpoint passed through Cloudflare."
+
 
       - name: Keep session alive
         shell: bash
