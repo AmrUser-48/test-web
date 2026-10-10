@@ -1,4 +1,4 @@
-name: Temporary remote ChatGPT browser
+name: Temporary remote ChatGPT Chromium
 
 on:
   workflow_dispatch:
@@ -13,14 +13,14 @@ on:
           - "180"
           - "300"
           - "350"
-        default: "350"
+        default: "60"
 
 permissions:
   contents: read
 
 jobs:
   remote-browser:
-    name: Start temporary browser desktop
+    name: Start temporary Chromium browser
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
@@ -34,31 +34,42 @@ jobs:
             echo "::error::Add BROWSER_ACCESS_PASSWORD under Settings → Secrets and variables → Actions. Use at least 20 characters."
             exit 1
           fi
-
-      - name: Start password-protected desktop
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker pull lscr.io/linuxserver/webtop:ubuntu-xfce
-          docker run -d --name remote-chatgpt --shm-size=1g \
-            --security-opt seccomp=unconfined \
-            -e TZ=Etc/UTC \
-            -e CUSTOM_USER=remote \
-            -e PASSWORD="$BROWSER_ACCESS_PASSWORD" \
-            -p 127.0.0.1:3000:3000 \
-            lscr.io/linuxserver/webtop:ubuntu-xfce
-          ready=0
-          for _ in $(seq 1 60); do
-            if curl -fsS -u "remote:$BROWSER_ACCESS_PASSWORD" http://127.0.0.1:3000/ >/dev/null; then ready=1; break; fi
-            sleep 5
-          done
-          if [[ "$ready" != 1 ]]; then
-            docker logs remote-chatgpt || true
-            echo "::error::Remote desktop did not start."
+          if [[ ! "$BROWSER_ACCESS_PASSWORD" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::Use only A-Z, a-z, 0-9, dot, underscore, or hyphen in BROWSER_ACCESS_PASSWORD; LinuxServer templated config can break on shell-special characters."
             exit 1
           fi
 
-      - name: Start HTTPS tunnel with password authentication
+      - name: Start Chromium directly at ChatGPT
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull lscr.io/linuxserver/chromium:latest
+          docker run -d --name remote-chatgpt --shm-size=1g \
+            -e TZ=Etc/UTC \
+            -e PIXELFLUX_WAYLAND=false \
+            -e CHROME_CLI=https://chatgpt.com \
+            -e CUSTOM_USER=remote \
+            -e PASSWORD="$BROWSER_ACCESS_PASSWORD" \
+            -p 127.0.0.1:3000:3000 \
+            lscr.io/linuxserver/chromium:latest
+          ready=0
+          for _ in $(seq 1 60); do
+            if curl -fsS -u "remote:$BROWSER_ACCESS_PASSWORD" http://127.0.0.1:3000/ -o /tmp/chromium-page.html; then ready=1; break; fi
+            sleep 5
+          done
+          if [[ "$ready" != 1 ]]; then
+            docker logs --tail=200 remote-chatgpt || true
+            echo "::error::Chromium remote interface did not start."
+            exit 1
+          fi
+          if ! docker exec remote-chatgpt sh -lc "ps -ef | grep -E '[c]hromium|[c]hrome' >/dev/null"; then
+            docker logs --tail=200 remote-chatgpt || true
+            echo "::error::The interface answers, but the Chromium process is not running."
+            exit 1
+          fi
+          echo "Local interface responds and Chromium process is running."
+
+      - name: Start HTTPS tunnel and test WebSocket
         shell: bash
         run: |
           set -euo pipefail
@@ -77,36 +88,53 @@ jobs:
             echo "::error::Could not establish the Cloudflare tunnel."
             exit 1
           fi
+          echo "Remote Chromium URL: $url"
           {
-            echo "## Remote browser is ready"
+            echo "## Temporary remote ChatGPT Chromium"
             echo
             echo "$url"
             echo
-            echo "Browser login: username remote; password is the BROWSER_ACCESS_PASSWORD secret."
-            echo "Session automatically ends in $SESSION_MINUTES minutes. Cancel this workflow to stop it sooner."
-            echo
-            echo "Open the desktop, start the browser, and navigate to https://chatgpt.com."
-            echo "This runner is disposable. ChatGPT cookies and browser data are not persisted as artifacts."
+            echo "Browser authentication: username `remote`; password is the BROWSER_ACCESS_PASSWORD secret."
+            echo "Chromium is configured to open https://chatgpt.com automatically."
+            echo "Session ends in $SESSION_MINUTES minutes; cancel this workflow to stop earlier."
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "Remote browser URL: $url"
+
           external_ready=0
           for _ in $(seq 1 12); do
-            if curl --connect-timeout 5 --max-time 15 -fsS -u "remote:$BROWSER_ACCESS_PASSWORD" "$url/" >/dev/null; then external_ready=1; break; fi
+            if curl --connect-timeout 5 --max-time 15 -fsS -u "remote:$BROWSER_ACCESS_PASSWORD" "$url/" -o /tmp/external-page.html; then external_ready=1; break; fi
             sleep 5
           done
           if [[ "$external_ready" != 1 ]]; then
             cat /tmp/cloudflared.log || true
-            echo "::error::Tunnel URL was allocated, but the protected desktop did not answer through Cloudflare."
+            echo "::error::The external HTTPS URL did not answer with valid authentication."
             exit 1
           fi
-          echo "External HTTPS URL passed authenticated HTTP health check."
+          if ! grep -qiE 'selkies|chromium' /tmp/external-page.html; then
+            echo "::error::The tunnel returned a page that does not look like the remote Chromium interface."
+            head -c 1200 /tmp/external-page.html || true
+            exit 1
+          fi
+
+          # Selkies uses /websocket for keyboard/mouse and stream signaling.
+          ws_status="$(curl --silent --show-error --max-time 5 --http1.1 -u "remote:$BROWSER_ACCESS_PASSWORD" \
+            -o /dev/null -w '%{http_code}' \
+            -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+            -H 'Sec-WebSocket-Version: 13' \
+            -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+            -H "Origin: $url" "$url/websocket" || true)"
+          echo "WebSocket handshake status: $ws_status"
+          if [[ "$ws_status" != "101" ]]; then
+            echo "::error::HTTP UI is reachable but Selkies WebSocket handshake did not return 101. The run log reports the status."
+            echo "The browser stream will not work until the WebSocket path is fixed."
+            exit 1
+          fi
+          echo "External UI and WebSocket handshake passed."
 
       - name: Keep session alive
         shell: bash
         run: sleep "$((SESSION_MINUTES * 60))"
 
-      - name: Remove desktop
+      - name: Remove browser
         if: always()
         shell: bash
-        run: |
-          docker rm -f remote-chatgpt >/dev/null 2>&1 || true
+        run: docker rm -f remote-chatgpt >/dev/null 2>&1 || true
