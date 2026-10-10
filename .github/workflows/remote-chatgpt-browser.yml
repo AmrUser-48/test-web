@@ -128,30 +128,92 @@ jobs:
             exit 1
           fi
 
-          # Selkies' current API WebSocket endpoint is /api/websockets.
-          # A successful 101 means the handshake worked; curl then times out because the socket is long-lived.
-          probe_ws() {
-            local base="$1" output="$2" errors="$3"
-            curl --silent --show-error --max-time 3 --http1.1 -u "remote:$BROWSER_ACCESS_PASSWORD" \
-              -o "$output" -w '%{http_code}' \
-              -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
-              -H 'Sec-WebSocket-Version: 13' \
-              -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
-              -H "Origin: $base" "$base/api/websockets" 2>"$errors" || true
-          }
+          # Test with a real browser client. A bare curl HTTP 101 handshake does not
+          # speak the Selkies protocol and can make the server stop its capture pipeline.
+          mkdir -p "$RUNNER_TEMP/selkies-browser-check"
+          cd "$RUNNER_TEMP/selkies-browser-check"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund playwright
+          npx playwright install --with-deps chromium
 
-          local_api="$(probe_ws http://127.0.0.1:3000 /tmp/local-api.body /tmp/local-api.err)"
-          public_api="$(probe_ws "$url" /tmp/public-api.body /tmp/public-api.err)"
-          echo "Selkies /api/websockets handshake: local=$local_api; public=$public_api"
-          if [[ "$local_api" != "101" || "$public_api" != "101" ]]; then
-            echo "::error::Selkies WebSocket handshake failed. HTTP 101 is required."
-            echo "--- Local response ---"; cat /tmp/local-api.body /tmp/local-api.err 2>/dev/null || true
-            echo "--- Public response ---"; cat /tmp/public-api.body /tmp/public-api.err 2>/dev/null || true
-            echo "--- Chromium/Selkies logs ---"; docker logs --tail=200 remote-chatgpt || true
-            echo "--- Cloudflare logs ---"; tail -100 /tmp/cloudflared.log || true
-            exit 1
-          fi
-          echo "Local and public WebSocket handshakes passed."
+          export SELKIES_PUBLIC_URL="$url"
+          node <<'NODE'
+          const { chromium } = require('playwright');
+
+          (async () => {
+            let browser;
+            const pageErrors = [];
+            const sockets = [];
+            try {
+              browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+              const context = await browser.newContext({
+                httpCredentials: {
+                  username: 'remote',
+                  password: process.env.BROWSER_ACCESS_PASSWORD,
+                  send: 'always'
+                },
+                viewport: { width: 1280, height: 800 }
+              });
+              const page = await context.newPage();
+              page.on('pageerror', error => pageErrors.push(String(error.message).slice(0, 400)));
+              page.on('console', message => {
+                if (message.type() === 'error') pageErrors.push(String(message.text()).slice(0, 400));
+              });
+              page.on('websocket', socket => {
+                const record = {
+                  url: socket.url(),
+                  receivedFrames: 0,
+                  binaryFrames: 0,
+                  largeBinaryFrames: 0,
+                  binaryBytes: 0,
+                  closed: false,
+                  errors: []
+                };
+                sockets.push(record);
+                socket.on('framereceived', event => {
+                  record.receivedFrames++;
+                  if (typeof event.payload !== 'string') {
+                    const size = event.payload.length || 0;
+                    record.binaryFrames++;
+                    record.binaryBytes += size;
+                    if (size >= 128) record.largeBinaryFrames++;
+                  }
+                });
+                socket.on('socketerror', error => record.errors.push(String(error).slice(0, 300)));
+                socket.on('close', () => { record.closed = true; });
+              });
+
+              const response = await page.goto(process.env.SELKIES_PUBLIC_URL, {
+                waitUntil: 'domcontentloaded',
+                timeout: 45000
+              });
+              console.log('Browser client page HTTP status: ' + (response ? response.status() : 'no response'));
+              console.log('Browser client title: ' + (await page.title()));
+              await page.waitForTimeout(15000);
+
+              const matching = sockets.filter(socket => {
+                try { return new URL(socket.url).pathname.endsWith('/api/websockets'); }
+                catch (_) { return false; }
+              });
+              console.log('Selkies browser WebSocket: ' + JSON.stringify(matching));
+              console.log('Browser page errors: ' + JSON.stringify(pageErrors.slice(0, 12)));
+
+              const receivesScreenData = matching.some(socket =>
+                socket.binaryFrames > 0 && socket.largeBinaryFrames > 0
+              );
+              if (!response || response.status() !== 200 || matching.length === 0 || !receivesScreenData) {
+                await page.screenshot({ path: '/tmp/selkies-browser-check.png', fullPage: true }).catch(() => {});
+                throw new Error('Public page did not establish a Selkies session receiving binary stream frames.');
+              }
+              console.log('PASS: public page loaded and a real Selkies client received binary stream frames.');
+            } catch (error) {
+              console.error('Browser-level streaming test failed: ' + (error && error.stack ? error.stack : error));
+              process.exitCode = 1;
+            } finally {
+              if (browser) await browser.close().catch(() => {});
+            }
+          })();
+          NODE
 
           echo "--- Chromium/stream startup diagnostics ---"
           sleep 8
