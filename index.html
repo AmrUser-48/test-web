@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0a0c0b">
+  <meta name="description" content="A tiny, fast terminal-style single-page app starter.">
+  <title>test-web</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#/home" aria-label="test-web home"><span class="brand-mark">&gt;_</span><span>test-web</span></a>
+      <div class="top-meta"><span class="live-dot"></span> STATIC / ZERO BUILD <span class="version">v0.1</span></div>
+      <button class="menu-toggle" id="menu-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false">☰</button>
+    </header>
+    <div class="workspace">
+      <aside class="sidebar" id="sidebar" aria-label="Main navigation">
+        <div class="side-label">WORKSPACE</div>
+        <nav class="nav-list">
+          <a class="nav-link" href="#/home" data-route="home">⌂ &nbsp; Overview <span class="nav-key">01</span></a>
+          <a class="nav-link" href="#/chat" data-route="chat">&gt;_ &nbsp; Chat interface <span class="nav-key">02</span></a>
+          <a class="nav-link" href="#/settings" data-route="settings">⚙ &nbsp; Settings <span class="nav-key">03</span></a>
+        </nav>
+        <div class="side-bottom"><span class="live-dot"></span> Client ready <span class="side-spacer"></span><span class="muted">v0.1.0</span></div>
+      </aside>
+      <main id="main" class="main" tabindex="-1" aria-live="polite"><p class="muted">Loading…</p></main>
+    </div>
+    <footer class="statusbar"><span><span class="live-dot"></span> LOCAL UI</span><span id="route-status">route: /home</span><span>NO FRAMEWORK · NO TRACKERS</span></footer>
+  </div>
+</body>
+</html>
