@@ -12,7 +12,7 @@ A manually triggered GitHub Actions workflow starts a disposable Chromium contai
 4. Chromium is configured to open <https://chatgpt.com>. Sign in with your normal account.
 5. Cancel the Actions run to stop early.
 
-The workflow checks Chromium's launch URL and public page, then opens the tunnel in a separate automated browser and requires a real Selkies client to receive binary stream frames. A bare WebSocket HTTP 101 handshake is not treated as proof that streaming works. If the browser-level check fails, the run stops with diagnostics. This is a temporary experiment, not a persistent server. Sessions are disposable and browser login data is not saved as an artifact.
+The workflow checks Chromium's launch URL and opens the public viewer in an automated browser. It saves the viewer screenshot, DOM/canvas state, browser errors, and WebSocket frame statistics as a short-lived Actions artifact so a loading-screen failure can be inspected instead of being called successful just because a socket connected. This is a temporary experiment, not a persistent server. The diagnostic artifact expires after one day; browser login data is not saved as an artifact.
 
 ## Local preview
 
