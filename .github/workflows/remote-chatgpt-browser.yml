@@ -47,6 +47,7 @@ jobs:
           docker run -d --name remote-chatgpt --shm-size=1g \
             -e TZ=Etc/UTC \
             -e PIXELFLUX_WAYLAND=false \
+            -e SELKIES_DEBUG=true \
             -e CHROME_CLI=https://chatgpt.com \
             -e CUSTOM_USER=remote \
             -e PASSWORD="$BROWSER_ACCESS_PASSWORD" \
