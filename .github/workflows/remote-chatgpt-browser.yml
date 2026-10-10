@@ -139,12 +139,23 @@ jobs:
           export SELKIES_PUBLIC_URL="$url"
           node <<'NODE'
           const { chromium } = require('playwright');
+          const fs = require('node:fs/promises');
+          const path = require('node:path');
 
           (async () => {
             let browser;
+            let page;
             const pageErrors = [];
             const sockets = [];
+            const diagnosticsDir = path.join(process.env.RUNNER_TEMP, 'selkies-browser-check');
+            const report = {
+              publicUrl: process.env.SELKIES_PUBLIC_URL,
+              checkedAt: new Date().toISOString(),
+              pageErrors,
+              sockets
+            };
             try {
+              await fs.mkdir(diagnosticsDir, { recursive: true });
               browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
               const context = await browser.newContext({
                 httpCredentials: {
@@ -155,10 +166,15 @@ jobs:
                 },
                 viewport: { width: 1280, height: 800 }
               });
-              const page = await context.newPage();
-              page.on('pageerror', error => pageErrors.push(String(error.message).slice(0, 400)));
+              page = await context.newPage();
+              page.on('pageerror', error => pageErrors.push(String(error.message).slice(0, 500)));
               page.on('console', message => {
-                if (message.type() === 'error') pageErrors.push(String(message.text()).slice(0, 400));
+                if (message.type() === 'error') pageErrors.push(String(message.text()).slice(0, 500));
+              });
+              page.on('requestfailed', request => {
+                const failure = request.failure();
+                pageErrors.push(('REQUEST FAILED ' + request.url() + ' :: ' +
+                  (failure ? failure.errorText : 'unknown')).slice(0, 500));
               });
               page.on('websocket', socket => {
                 const record = {
@@ -188,40 +204,79 @@ jobs:
                 waitUntil: 'domcontentloaded',
                 timeout: 45000
               });
-              console.log('Browser client page HTTP status: ' + (response ? response.status() : 'no response'));
-              console.log('Browser client title: ' + (await page.title()));
+              report.pageHttpStatus = response ? response.status() : null;
+              report.pageTitle = await page.title();
               await page.waitForTimeout(15000);
+              report.dom = await page.evaluate(() => ({
+                title: document.title,
+                url: location.href,
+                bodyText: (document.body && document.body.innerText || '').slice(0, 2000),
+                elements: Array.from(document.querySelectorAll('canvas, video, iframe, [role="progressbar"], [aria-busy="true"]'))
+                  .slice(0, 40)
+                  .map(el => ({
+                    tag: el.tagName,
+                    id: el.id || '',
+                    className: typeof el.className === 'string' ? el.className.slice(0, 200) : '',
+                    width: el.width || el.clientWidth || 0,
+                    height: el.height || el.clientHeight || 0,
+                    visible: !!(el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden')
+                  }))
+              }));
 
               const matching = sockets.filter(socket => {
                 try { return new URL(socket.url).pathname.endsWith('/api/websockets'); }
                 catch (_) { return false; }
               });
+              report.matchingWebSockets = matching;
+              console.log('Remote viewer page HTTP status: ' + report.pageHttpStatus);
+              console.log('Remote viewer title: ' + report.pageTitle);
+              console.log('Remote viewer DOM: ' + JSON.stringify(report.dom));
               console.log('Selkies browser WebSocket: ' + JSON.stringify(matching));
-              console.log('Browser page errors: ' + JSON.stringify(pageErrors.slice(0, 12)));
+              console.log('Browser page errors: ' + JSON.stringify(pageErrors.slice(0, 20)));
 
               const receivesScreenData = matching.some(socket =>
                 socket.binaryFrames > 0 && socket.largeBinaryFrames > 0
               );
-              if (!response || response.status() !== 200 || matching.length === 0 || !receivesScreenData) {
-                await page.screenshot({ path: '/tmp/selkies-browser-check.png', fullPage: true }).catch(() => {});
+              report.receivesBinaryStreamFrames = receivesScreenData;
+              if (!report.pageHttpStatus || report.pageHttpStatus !== 200 || matching.length === 0 || !receivesScreenData) {
                 throw new Error('Public page did not establish a Selkies session receiving binary stream frames.');
               }
               console.log('PASS: public page loaded and a real Selkies client received binary stream frames.');
             } catch (error) {
-              console.error('Browser-level streaming test failed: ' + (error && error.stack ? error.stack : error));
+              report.testError = String(error && error.stack ? error.stack : error);
+              console.error('Browser-level streaming test failed: ' + report.testError);
               process.exitCode = 1;
             } finally {
+              if (page) {
+                await page.screenshot({
+                  path: path.join(diagnosticsDir, 'viewer.png'),
+                  fullPage: true,
+                  timeout: 10000
+                }).catch(error => { report.screenshotError = String(error).slice(0, 300); });
+              }
+              report.pageErrors = pageErrors;
+              report.sockets = sockets;
+              await fs.writeFile(path.join(diagnosticsDir, 'diagnostics.json'), JSON.stringify(report, null, 2));
               if (browser) await browser.close().catch(() => {});
             }
           })();
           NODE
 
-          echo "--- Chromium/stream startup diagnostics ---"
+
           sleep 8
           docker exec remote-chatgpt sh -lc 'printf "DISPLAY="; printf "%s\\n" "$DISPLAY"; printf "\\nProcesses:\\n"; ps -ef | grep -E "[c]hromium|[c]hrome|[s]elkies|[p]ixelflux|[n]ginx"; printf "\\nHTTP listeners:\\n"; (ss -lntp || netstat -lntp || true)' || true
           docker logs --tail=120 remote-chatgpt || true
           echo "--- End startup diagnostics ---"
 
+
+      - name: Upload remote viewer diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selkies-viewer-diagnostics-${{ github.run_id }}
+          path: ${{ runner.temp }}/selkies-browser-check/
+          if-no-files-found: ignore
+          retention-days: 1
 
       - name: Keep session alive
         shell: bash
