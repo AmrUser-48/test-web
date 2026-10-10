@@ -53,7 +53,7 @@ jobs:
             -e SELKIES_FRAMERATE=20 \
             -e SELKIES_JPEG_QUALITY=60 \
             -e SELKIES_DEBUG=true \
-            -e CHROME_CLI=https://chatgpt.com \
+            -e CHROME_CLI=/config/.config/chromium\ https://chatgpt.com \
             -e CUSTOM_USER=remote \
             -e PASSWORD="$BROWSER_ACCESS_PASSWORD" \
             -p 127.0.0.1:3000:3000 \
@@ -73,7 +73,14 @@ jobs:
             echo "::error::The interface answers, but the Chromium process is not running."
             exit 1
           fi
-          echo "Local interface responds and Chromium process is running."
+          chrome_args="$(docker exec remote-chatgpt sh -lc "ps -eo args | grep '[c]hromium --show-component-extension-options' | head -n 1" || true)"
+          echo "Chromium launch args: $chrome_args"
+          if [[ "$chrome_args" != *"--user-data-dir /config/.config/chromium https://chatgpt.com"* ]]; then
+            docker logs --tail=200 remote-chatgpt || true
+            echo "::error::Chromium did not receive the expected user-data directory followed by the ChatGPT URL."
+            exit 1
+          fi
+          echo "Local interface responds and Chromium has the intended startup URL."
 
       - name: Start HTTPS tunnel and test WebSocket
         shell: bash
@@ -121,45 +128,31 @@ jobs:
             exit 1
           fi
 
-          # Diagnose both endpoint forms because current Selkies documentation describes both.
+          # Selkies' current API WebSocket endpoint is /api/websockets.
+          # A successful 101 means the handshake worked; curl then times out because the socket is long-lived.
           probe_ws() {
-            local base="$1" path="$2" output="$3"
-            curl --silent --show-error --max-time 6 --http1.1 -u "remote:$BROWSER_ACCESS_PASSWORD" \
+            local base="$1" output="$2" errors="$3"
+            curl --silent --show-error --max-time 3 --http1.1 -u "remote:$BROWSER_ACCESS_PASSWORD" \
               -o "$output" -w '%{http_code}' \
               -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
               -H 'Sec-WebSocket-Version: 13' \
               -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
-              -H "Origin: $base" "$base$path" || true
+              -H "Origin: $base" "$base/api/websockets" 2>"$errors" || true
           }
 
-          local_ws="$(probe_ws http://127.0.0.1:3000 /websocket /tmp/local-ws.body)"
-          local_api="$(probe_ws http://127.0.0.1:3000 /api/websockets /tmp/local-api.body)"
-          public_ws="$(probe_ws "$url" /websocket /tmp/public-ws.body)"
-          public_api="$(probe_ws "$url" /api/websockets /tmp/public-api.body)"
-          echo "WebSocket HTTP statuses: local /websocket=$local_ws; local /api/websockets=$local_api; public /websocket=$public_ws; public /api/websockets=$public_api"
-
-          if [[ "$public_ws" != "101" && "$public_api" != "101" ]]; then
-            echo "::error::Neither WebSocket endpoint upgraded through Cloudflare."
-            echo "--- Local /websocket response ---"
-            cat /tmp/local-ws.body || true
-            echo
-            echo "--- Local /api/websockets response ---"
-            cat /tmp/local-api.body || true
-            echo
-            echo "--- Public /websocket response ---"
-            cat /tmp/public-ws.body || true
-            echo
-            echo "--- Public /api/websockets response ---"
-            cat /tmp/public-api.body || true
-            echo
-            echo "--- Chromium/Selkies container logs ---"
-            docker logs --tail=200 remote-chatgpt || true
-            echo
-            echo "--- Cloudflare tunnel logs ---"
-            tail -100 /tmp/cloudflared.log || true
+          local_api="$(probe_ws http://127.0.0.1:3000 /tmp/local-api.body /tmp/local-api.err)"
+          public_api="$(probe_ws "$url" /tmp/public-api.body /tmp/public-api.err)"
+          echo "Selkies /api/websockets handshake: local=$local_api; public=$public_api"
+          if [[ "$local_api" != "101" || "$public_api" != "101" ]]; then
+            echo "::error::Selkies WebSocket handshake failed. HTTP 101 is required."
+            echo "--- Local response ---"; cat /tmp/local-api.body /tmp/local-api.err 2>/dev/null || true
+            echo "--- Public response ---"; cat /tmp/public-api.body /tmp/public-api.err 2>/dev/null || true
+            echo "--- Chromium/Selkies logs ---"; docker logs --tail=200 remote-chatgpt || true
+            echo "--- Cloudflare logs ---"; tail -100 /tmp/cloudflared.log || true
             exit 1
           fi
-          echo "At least one documented WebSocket endpoint passed through Cloudflare."
+          echo "Local and public WebSocket handshakes passed."
+
           echo "--- Chromium/stream startup diagnostics ---"
           sleep 8
           docker exec remote-chatgpt sh -lc 'printf "DISPLAY="; printf "%s\\n" "$DISPLAY"; printf "\\nProcesses:\\n"; ps -ef | grep -E "[c]hromium|[c]hrome|[s]elkies|[p]ixelflux|[n]ginx"; printf "\\nHTTP listeners:\\n"; (ss -lntp || netstat -lntp || true)' || true
