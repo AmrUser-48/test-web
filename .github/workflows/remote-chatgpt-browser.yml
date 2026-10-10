@@ -40,7 +40,7 @@ jobs:
           fi
           echo "::add-mask::$BROWSER_ALLOWED_EMAIL"
 
-      - name: Start disposable desktop
+      - name: Start disposable HTTPS desktop
         shell: bash
         run: |
           set -euo pipefail
@@ -48,11 +48,11 @@ jobs:
           docker run -d --name remote-chatgpt --shm-size=1g \
             --security-opt seccomp=unconfined \
             -e TZ=Etc/UTC \
-            -p 127.0.0.1:3000:3000 \
+            -p 127.0.0.1:3001:3001 \
             lscr.io/linuxserver/webtop:ubuntu-xfce
           ready=0
           for _ in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:3000/ >/dev/null; then ready=1; break; fi
+            if curl -kfsS https://127.0.0.1:3001/ >/dev/null; then ready=1; break; fi
             sleep 5
           done
           if [[ "$ready" != 1 ]]; then
@@ -67,8 +67,8 @@ jobs:
           set -euo pipefail
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
           chmod +x /tmp/cloudflared
-          nohup /tmp/cloudflared tunnel --url http://127.0.0.1:3000 \
-            --allowed-mail "$BROWSER_ALLOWED_EMAIL" --no-autoupdate \
+          nohup /tmp/cloudflared tunnel --url https://127.0.0.1:3001 \
+            --no-tls-verify --allowed-mail "$BROWSER_ALLOWED_EMAIL" --no-autoupdate \
             >/tmp/cloudflared.log 2>&1 &
           ready=0
           for _ in $(seq 1 60); do
