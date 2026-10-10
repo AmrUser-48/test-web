@@ -24,23 +24,18 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
-      BROWSER_ALLOWED_EMAIL: ${{ secrets.BROWSER_ALLOWED_EMAIL }}
+      BROWSER_ACCESS_PASSWORD: ${{ secrets.BROWSER_ACCESS_PASSWORD }}
       SESSION_MINUTES: ${{ inputs.session_minutes }}
     steps:
-      - name: Validate access email
+      - name: Validate access password
         shell: bash
         run: |
-          if [[ -z "$BROWSER_ALLOWED_EMAIL" ]]; then
-            echo "::error::Add BROWSER_ALLOWED_EMAIL under Settings → Secrets and variables → Actions."
+          if [[ -z "$BROWSER_ACCESS_PASSWORD" || ${#BROWSER_ACCESS_PASSWORD} -lt 20 ]]; then
+            echo "::error::Add BROWSER_ACCESS_PASSWORD under Settings → Secrets and variables → Actions. Use at least 20 characters."
             exit 1
           fi
-          if [[ ! "$BROWSER_ALLOWED_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]; then
-            echo "::error::BROWSER_ALLOWED_EMAIL is not a valid email address."
-            exit 1
-          fi
-          echo "::add-mask::$BROWSER_ALLOWED_EMAIL"
 
-      - name: Start disposable HTTPS desktop
+      - name: Start password-protected desktop
         shell: bash
         run: |
           set -euo pipefail
@@ -48,11 +43,13 @@ jobs:
           docker run -d --name remote-chatgpt --shm-size=1g \
             --security-opt seccomp=unconfined \
             -e TZ=Etc/UTC \
-            -p 127.0.0.1:3001:3001 \
+            -e CUSTOM_USER=remote \
+            -e PASSWORD="$BROWSER_ACCESS_PASSWORD" \
+            -p 127.0.0.1:3000:3000 \
             lscr.io/linuxserver/webtop:ubuntu-xfce
           ready=0
           for _ in $(seq 1 60); do
-            if curl -kfsS https://127.0.0.1:3001/ >/dev/null; then ready=1; break; fi
+            if curl -fsS http://127.0.0.1:3000/ >/dev/null; then ready=1; break; fi
             sleep 5
           done
           if [[ "$ready" != 1 ]]; then
@@ -61,14 +58,13 @@ jobs:
             exit 1
           fi
 
-      - name: Start email-protected HTTPS tunnel
+      - name: Start HTTPS tunnel with password authentication
         shell: bash
         run: |
           set -euo pipefail
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
           chmod +x /tmp/cloudflared
-          nohup /tmp/cloudflared tunnel --url https://127.0.0.1:3001 \
-            --no-tls-verify --allowed-mail "$BROWSER_ALLOWED_EMAIL" --no-autoupdate \
+          nohup /tmp/cloudflared tunnel --url http://127.0.0.1:3000 --no-autoupdate \
             >/tmp/cloudflared.log 2>&1 &
           ready=0
           for _ in $(seq 1 60); do
@@ -86,7 +82,7 @@ jobs:
             echo
             echo "$url"
             echo
-            echo "Cloudflare will email a one-time PIN to the address configured in BROWSER_ALLOWED_EMAIL."
+            echo "Browser login: username remote; password is the BROWSER_ACCESS_PASSWORD secret."
             echo "Session automatically ends in $SESSION_MINUTES minutes. Cancel this workflow to stop it sooner."
             echo
             echo "Open the desktop, start the browser, and navigate to https://chatgpt.com."
