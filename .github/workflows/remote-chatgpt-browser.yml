@@ -47,6 +47,11 @@ jobs:
           docker run -d --name remote-chatgpt --shm-size=1g \
             -e TZ=Etc/UTC \
             -e PIXELFLUX_WAYLAND=false \
+            -e DISABLE_DRI3=true \
+            -e SELKIES_MODE=websockets \
+            -e SELKIES_ENCODER=jpeg \
+            -e SELKIES_FRAMERATE=20 \
+            -e SELKIES_JPEG_QUALITY=60 \
             -e SELKIES_DEBUG=true \
             -e CHROME_CLI=https://chatgpt.com \
             -e CUSTOM_USER=remote \
@@ -155,6 +160,11 @@ jobs:
             exit 1
           fi
           echo "At least one documented WebSocket endpoint passed through Cloudflare."
+          echo "--- Chromium/stream startup diagnostics ---"
+          sleep 8
+          docker exec remote-chatgpt sh -lc 'printf "DISPLAY="; printf "%s\\n" "$DISPLAY"; printf "\\nProcesses:\\n"; ps -ef | grep -E "[c]hromium|[c]hrome|[s]elkies|[p]ixelflux|[n]ginx"; printf "\\nHTTP listeners:\\n"; (ss -lntp || netstat -lntp || true)' || true
+          docker logs --tail=120 remote-chatgpt || true
+          echo "--- End startup diagnostics ---"
 
 
       - name: Keep session alive
