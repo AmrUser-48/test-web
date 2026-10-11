@@ -439,6 +439,7 @@ jobs:
           key: core2-vnc-state-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload encrypted desktop-state backup
+        id: upload-state
         if: always() && steps.snapshot-state.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
