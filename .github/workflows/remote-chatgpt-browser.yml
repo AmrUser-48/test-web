@@ -1,4 +1,4 @@
-name: Temporary remote ChatGPT Chromium
+name: Temporary remote ChatGPT VNC
 
 on:
   workflow_dispatch:
@@ -19,275 +19,124 @@ permissions:
   contents: read
 
 jobs:
-  remote-browser:
-    name: Start temporary Chromium browser
+  remote-vnc:
+    name: Start temporary Chromium VNC session
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
-      BROWSER_ACCESS_PASSWORD: ${{ secrets.BROWSER_ACCESS_PASSWORD }}
+      TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
       SESSION_MINUTES: ${{ inputs.session_minutes }}
+
     steps:
-      - name: Validate access configuration
+      - name: Check Tailscale key
         shell: bash
-        env:
-          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
-          if [[ -z "$BROWSER_ACCESS_PASSWORD" || ${#BROWSER_ACCESS_PASSWORD} -lt 20 ]]; then
-            echo "::error::Add BROWSER_ACCESS_PASSWORD under Settings → Secrets and variables → Actions. Use at least 20 characters."
-            exit 1
-          fi
-          if [[ ! "$BROWSER_ACCESS_PASSWORD" =~ ^[A-Za-z0-9._-]+$ ]]; then
-            echo "::error::Use only A-Z, a-z, 0-9, dot, underscore, or hyphen in BROWSER_ACCESS_PASSWORD."
-            exit 1
-          fi
           if [[ -z "$TAILSCALE_AUTHKEY" ]]; then
-            echo "::error::Add an ephemeral, reusable Tailscale auth key as the TAILSCALE_AUTHKEY repository secret."
+            echo "::error::Add a Tailscale auth key as the TAILSCALE_AUTHKEY repository secret."
             exit 1
           fi
 
-      - name: Connect runner to Tailscale
+      - name: Connect runner to private Tailscale network
         uses: tailscale/github-action@v4
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
 
-      - name: Start Chromium directly at ChatGPT
+      - name: Start Chromium at ChatGPT
         shell: bash
         run: |
           set -euo pipefail
           TAILSCALE_IP="$(tailscale ip -4 | head -n 1)"
           if [[ -z "$TAILSCALE_IP" ]]; then
-            echo "::error::Tailscale did not assign the runner a private IP."
+            echo "::error::Tailscale did not assign this runner a private IP."
             exit 1
           fi
+
           docker pull lscr.io/linuxserver/chromium:latest
           docker run -d --name remote-chatgpt --shm-size=1g \
             -e TZ=Etc/UTC \
             -e PIXELFLUX_WAYLAND=false \
             -e DISABLE_DRI3=true \
-            -e SELKIES_MODE=websockets \
-            -e SELKIES_ENCODER=jpeg \
-            -e SELKIES_FRAMERATE=20 \
-            -e SELKIES_JPEG_QUALITY=60 \
-            -e SELKIES_DEBUG=true \
-            -e CHROME_CLI=/config/.config/chromium\ https://chatgpt.com \
-            -e CUSTOM_USER=remote \
-            -e PASSWORD="$BROWSER_ACCESS_PASSWORD" \
-            -p "${TAILSCALE_IP}:3000:3000" \
+            -e CHROME_CLI=/config/.config/chromium\\ https://chatgpt.com \
+            -p "${TAILSCALE_IP}:5900:5900" \
             lscr.io/linuxserver/chromium:latest
+
           ready=0
           for _ in $(seq 1 60); do
-            if curl -fsS -u "remote:$BROWSER_ACCESS_PASSWORD" "http://$TAILSCALE_IP:3000/" -o /tmp/chromium-page.html; then ready=1; break; fi
+            if docker exec remote-chatgpt sh -lc "ps -ef | grep -E '[c]hromium|[c]hrome' >/dev/null"; then
+              ready=1
+              break
+            fi
             sleep 5
           done
           if [[ "$ready" != 1 ]]; then
             docker logs --tail=200 remote-chatgpt || true
-            echo "::error::Chromium remote interface did not start."
+            echo "::error::Chromium did not start."
             exit 1
           fi
-          if ! docker exec remote-chatgpt sh -lc "ps -ef | grep -E '[c]hromium|[c]hrome' >/dev/null"; then
-            docker logs --tail=200 remote-chatgpt || true
-            echo "::error::The interface answers, but the Chromium process is not running."
-            exit 1
-          fi
+
           chrome_args="$(docker exec remote-chatgpt sh -lc "ps -eo args | grep '[c]hromium --show-component-extension-options' | head -n 1" || true)"
           echo "Chromium launch args: $chrome_args"
-          if [[ "$chrome_args" != *"--user-data-dir /config/.config/chromium https://chatgpt.com"* ]]; then
+          if [[ "$chrome_args" != *"https://chatgpt.com"* ]]; then
             docker logs --tail=200 remote-chatgpt || true
-            echo "::error::Chromium did not receive the expected user-data directory followed by the ChatGPT URL."
+            echo "::error::Chromium did not receive the ChatGPT startup URL."
             exit 1
           fi
-          echo "Private Tailscale interface responds and Chromium has the intended startup URL."
-          echo "TAILSCALE_IP=$TAILSCALE_IP" >> "$GITHUB_ENV"
 
-      - name: Publish private Tailscale URL and test WebSocket
+          echo "TAILSCALE_IP=$TAILSCALE_IP" >> "$GITHUB_ENV"
+          echo "Runner Tailscale IP: $TAILSCALE_IP"
+
+      - name: Start native VNC server inside Chromium container
         shell: bash
         run: |
           set -euo pipefail
-          TAILSCALE_IP="$(tailscale ip -4 | head -n 1)"
-          if [[ -z "$TAILSCALE_IP" ]]; then
-            echo "::error::The runner has no Tailscale IP."
+
+          # The container already runs Xvfb; x11vnc shares that same X11 display.
+          docker exec remote-chatgpt sh -lc 'apt-get update && apt-get install -y --no-install-recommends x11vnc'
+
+          DISPLAY_NAME="$(docker exec remote-chatgpt sh -lc "ps -eo args | sed -n 's#.*Xvfb \\(:[0-9][0-9]*\\).*#\\1#p' | head -n 1")"
+          if [[ -z "$DISPLAY_NAME" ]]; then
+            docker exec remote-chatgpt sh -lc 'ps -ef | grep -E "[X]vfb|[X]org" || true'
+            docker logs --tail=200 remote-chatgpt || true
+            echo "::error::Could not detect the X11 display in the Chromium container."
             exit 1
           fi
-          url="http://${TAILSCALE_IP}:3000"
-          echo "Private remote Chromium URL: $url"
+          echo "Sharing X11 display $DISPLAY_NAME"
+
+          docker exec -d remote-chatgpt sh -lc "x11vnc -display '$DISPLAY_NAME' -rfbport 5900 -forever -shared -nopw -listen 0.0.0.0 -noxdamage -repeat >/tmp/x11vnc.log 2>&1"
+
+          ready=0
+          for _ in $(seq 1 30); do
+            reply="$(timeout 3 bash -c 'exec 3<>/dev/tcp/$1/5900; head -c 12 <&3' _ "$TAILSCALE_IP" 2>/dev/null || true)"
+            if [[ "$reply" == RFB* ]]; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [[ "$ready" != 1 ]]; then
+            docker exec remote-chatgpt sh -lc 'cat /tmp/x11vnc.log || true; ps -ef | grep "[x]11vnc" || true'
+            docker logs --tail=100 remote-chatgpt || true
+            echo "::error::VNC did not answer on the private Tailscale address."
+            exit 1
+          fi
+
           {
-            echo "## Remote ChatGPT Chromium (private Tailscale connection)"
+            echo "## Remote ChatGPT — native VNC"
             echo
-            echo "$url"
+            echo "Runner address: `$TAILSCALE_IP`"
             echo
-            echo "Open this URL only from a device signed into the same Tailscale network."
-            echo "Browser authentication: username remote; password is the BROWSER_ACCESS_PASSWORD secret."
-            echo "This URL is not a public tunnel. The session ends in $SESSION_MINUTES minutes; cancel this workflow to stop earlier."
+            echo "Open TigerVNC Viewer on Debian and connect to:"
+            echo
+            echo "`$TAILSCALE_IP::5900`"
+            echo
+            echo "The VNC port is bound only to the private Tailscale IP; it is not published to the public internet."
+            echo "The VNC service has no separate password because access is restricted to your authenticated Tailscale network."
+            echo "Session ends in $SESSION_MINUTES minutes. Cancel this workflow to stop sooner."
           } >> "$GITHUB_STEP_SUMMARY"
 
-          external_ready=0
-          for _ in $(seq 1 12); do
-            if curl --connect-timeout 5 --max-time 15 -fsS -u "remote:$BROWSER_ACCESS_PASSWORD" "$url/" -o /tmp/external-page.html; then external_ready=1; break; fi
-            sleep 5
-          done
-          if [[ "$external_ready" != 1 ]]; then
-            tailscale status || true
-            docker logs --tail=200 remote-chatgpt || true
-            echo "::error::The private Tailscale URL did not answer with valid authentication."
-            exit 1
-          fi
-          if ! grep -qiE 'selkies|chromium' /tmp/external-page.html; then
-            echo "::error::The Tailscale URL returned a page that does not look like the remote Chromium interface."
-            head -c 1200 /tmp/external-page.html || true
-            exit 1
-          fi
-          echo "Tailscale status:"
           tailscale status || true
-
-          # Test with a real browser client. A bare curl HTTP 101 handshake does not
-          # speak the Selkies protocol and can make the server stop its capture pipeline.
-          mkdir -p "$RUNNER_TEMP/selkies-browser-check"
-          cd "$RUNNER_TEMP/selkies-browser-check"
-          npm init -y >/dev/null
-          npm install --no-audit --no-fund playwright
-          npx playwright install --with-deps chromium
-
-          export SELKIES_VIEWER_URL="$url"
-          node <<'NODE'
-          const { chromium } = require('playwright');
-          const fs = require('node:fs/promises');
-          const path = require('node:path');
-
-          (async () => {
-            let browser;
-            let page;
-            const pageErrors = [];
-            const sockets = [];
-            const diagnosticsDir = path.join(process.env.RUNNER_TEMP, 'selkies-browser-check');
-            const report = {
-              publicUrl: process.env.SELKIES_VIEWER_URL,
-              checkedAt: new Date().toISOString(),
-              pageErrors,
-              sockets
-            };
-            try {
-              await fs.mkdir(diagnosticsDir, { recursive: true });
-              browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
-              const context = await browser.newContext({
-                httpCredentials: {
-                  username: 'remote',
-                  password: process.env.BROWSER_ACCESS_PASSWORD,
-                  origin: new URL(process.env.SELKIES_VIEWER_URL).origin,
-                  send: 'always'
-                },
-                viewport: { width: 1280, height: 800 }
-              });
-              page = await context.newPage();
-              page.on('pageerror', error => pageErrors.push(String(error.message).slice(0, 500)));
-              page.on('console', message => {
-                if (message.type() === 'error') pageErrors.push(String(message.text()).slice(0, 500));
-              });
-              page.on('requestfailed', request => {
-                const failure = request.failure();
-                pageErrors.push(('REQUEST FAILED ' + request.url() + ' :: ' +
-                  (failure ? failure.errorText : 'unknown')).slice(0, 500));
-              });
-              page.on('websocket', socket => {
-                const record = {
-                  url: socket.url(),
-                  receivedFrames: 0,
-                  binaryFrames: 0,
-                  largeBinaryFrames: 0,
-                  binaryBytes: 0,
-                  closed: false,
-                  errors: []
-                };
-                sockets.push(record);
-                socket.on('framereceived', event => {
-                  record.receivedFrames++;
-                  if (typeof event.payload !== 'string') {
-                    const size = event.payload.length || 0;
-                    record.binaryFrames++;
-                    record.binaryBytes += size;
-                    if (size >= 128) record.largeBinaryFrames++;
-                  }
-                });
-                socket.on('socketerror', error => record.errors.push(String(error).slice(0, 300)));
-                socket.on('close', () => { record.closed = true; });
-              });
-
-              const response = await page.goto(process.env.SELKIES_VIEWER_URL, {
-                waitUntil: 'domcontentloaded',
-                timeout: 45000
-              });
-              report.pageHttpStatus = response ? response.status() : null;
-              report.pageTitle = await page.title();
-              await page.waitForTimeout(15000);
-              report.dom = await page.evaluate(() => ({
-                title: document.title,
-                url: location.href,
-                bodyText: (document.body && document.body.innerText || '').slice(0, 2000),
-                elements: Array.from(document.querySelectorAll('canvas, video, iframe, [role="progressbar"], [aria-busy="true"]'))
-                  .slice(0, 40)
-                  .map(el => ({
-                    tag: el.tagName,
-                    id: el.id || '',
-                    className: typeof el.className === 'string' ? el.className.slice(0, 200) : '',
-                    width: el.width || el.clientWidth || 0,
-                    height: el.height || el.clientHeight || 0,
-                    visible: !!(el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden')
-                  }))
-              }));
-
-              const matching = sockets.filter(socket => {
-                try { return new URL(socket.url).pathname.endsWith('/api/websockets'); }
-                catch (_) { return false; }
-              });
-              report.matchingWebSockets = matching;
-              console.log('Remote viewer page HTTP status: ' + report.pageHttpStatus);
-              console.log('Remote viewer title: ' + report.pageTitle);
-              console.log('Remote viewer DOM: ' + JSON.stringify(report.dom));
-              console.log('Selkies browser WebSocket: ' + JSON.stringify(matching));
-              console.log('Browser page errors: ' + JSON.stringify(pageErrors.slice(0, 20)));
-
-              const receivesScreenData = matching.some(socket =>
-                socket.binaryFrames > 0 && socket.largeBinaryFrames > 0
-              );
-              report.receivesBinaryStreamFrames = receivesScreenData;
-              if (!report.pageHttpStatus || report.pageHttpStatus !== 200 || matching.length === 0 || !receivesScreenData) {
-                throw new Error('Public page did not establish a Selkies session receiving binary stream frames.');
-              }
-              console.log('PASS: public page loaded and a real Selkies client received binary stream frames.');
-            } catch (error) {
-              report.testError = String(error && error.stack ? error.stack : error);
-              console.error('Browser-level streaming test failed: ' + report.testError);
-              process.exitCode = 1;
-            } finally {
-              if (page) {
-                await page.screenshot({
-                  path: path.join(diagnosticsDir, 'viewer.png'),
-                  fullPage: true,
-                  timeout: 10000
-                }).catch(error => { report.screenshotError = String(error).slice(0, 300); });
-              }
-              report.pageErrors = pageErrors;
-              report.sockets = sockets;
-              await fs.writeFile(path.join(diagnosticsDir, 'diagnostics.json'), JSON.stringify(report, null, 2));
-              if (browser) await browser.close().catch(() => {});
-            }
-          })();
-          NODE
-
-
-          sleep 8
-          docker exec remote-chatgpt sh -lc 'printf "DISPLAY="; printf "%s\\n" "$DISPLAY"; printf "\\nProcesses:\\n"; ps -ef | grep -E "[c]hromium|[c]hrome|[s]elkies|[p]ixelflux|[n]ginx"; printf "\\nHTTP listeners:\\n"; (ss -lntp || netstat -lntp || true)' || true
-          docker logs --tail=120 remote-chatgpt || true
-          echo "--- End startup diagnostics ---"
-
-
-      - name: Upload remote viewer diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: selkies-viewer-diagnostics-${{ github.run_id }}
-          path: ${{ runner.temp }}/selkies-browser-check/
-          if-no-files-found: ignore
-          retention-days: 1
+          echo "PASS: native VNC is answering at $TAILSCALE_IP:5900."
 
       - name: Keep session alive
         shell: bash
