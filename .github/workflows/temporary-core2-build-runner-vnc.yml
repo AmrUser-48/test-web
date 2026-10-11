@@ -211,11 +211,11 @@ jobs:
           {
             echo "## Temporary Core 2 build runner — Tailscale SSH + VNC"
             echo
-            echo "- Tailscale IP: `$TAILSCALE_IP`"
-            echo "- VNC: `$TAILSCALE_IP::5900` (password: repository secret `VNC_PASSWORD`)"
-            echo "- SSH: `ssh -i core2-runner-ssh $SSH_USER@$TAILSCALE_IP`"
-            echo "- Download artifact: `core2-runner-tailscale-ssh-key-${GITHUB_RUN_ID}`"
-            echo "- SSH key passphrase: the same `VNC_PASSWORD` secret."
+            echo "- Tailscale IP: $TAILSCALE_IP"
+            echo "- VNC: ${TAILSCALE_IP}::5900 (password: repository secret VNC_PASSWORD)"
+            echo "- SSH: ssh -i core2-runner-ssh ${SSH_USER}@${TAILSCALE_IP}"
+            echo "- Download artifact: core2-runner-tailscale-ssh-key-${GITHUB_RUN_ID}"
+            echo "- SSH key passphrase: the same VNC_PASSWORD secret."
             echo "- SSH and VNC listen only on the runner's Tailscale address. No Cloudflare tunnel or Upterm is used."
             echo "- Session duration: $SESSION_MINUTES minutes. Cancel this workflow to stop the runner."
           } >> "$GITHUB_STEP_SUMMARY"
