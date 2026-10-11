@@ -2,19 +2,31 @@
 
 Minimal terminal-style single-page starter. Vanilla HTML/CSS/JS; no framework, build step, fonts, trackers, or runtime dependencies. Hash navigation changes views without reloading the document.
 
-## Temporary remote ChatGPT browser
+## Temporary remote ChatGPT VNC
 
-A manually triggered GitHub Actions workflow starts a disposable Chromium container configured to open ChatGPT and exposes the desktop **only on the runner's private Tailscale address**. It no longer uses Cloudflare or Pinggy.
+The workflow runs Chromium at ChatGPT and exposes a native VNC connection only on the runner's private Tailscale IP. It does not use Pinggy or Cloudflare.
 
-1. In Tailscale **Access Controls**, define the tag `tag:ci` (if it does not already exist), then create an **ephemeral, reusable auth key tagged `tag:ci`**. If device approval is enabled, pre-approve the key. Your tailnet policy must allow your Debian device to reach `tag:ci` on TCP port `3000`.
-2. Add that key to this repository's Actions secrets as `TAILSCALE_AUTHKEY`. Also add `BROWSER_ACCESS_PASSWORD` with a unique password of at least 20 characters, using only ASCII letters, digits, dot, underscore, and hyphen: [Repository secrets](https://github.com/AmrUser-48/test-web/settings/secrets/actions/new).
-3. Install the official Tailscale package on Debian 12 and sign in to the **same Tailscale network** as your account.
-4. Run [Temporary remote ChatGPT Chromium](https://github.com/AmrUser-48/test-web/actions/workflows/remote-chatgpt-browser.yml) and select a duration.
-5. Open the private `http://100.x.y.z:3000` URL from the run summary. Log in as `remote` using `BROWSER_ACCESS_PASSWORD`. The URL works only while the runner is online and your Debian laptop is connected to the same Tailscale network.
-6. To check the route on Debian, run `tailscale ping 100.x.y.z`. The output should say `direct`; if it says `DERP`, Tailscale is relaying the connection.
-7. Cancel the Actions run to stop early.
+1. Create a Tailscale account and sign in on your laptop.
+2. In [Tailscale key settings](https://login.tailscale.com/admin/settings/keys), create a reusable, ephemeral auth key. Add it to [this repository's Actions secrets](https://github.com/AmrUser-48/test-web/settings/secrets/actions/new) as `TAILSCALE_AUTHKEY`. Do not paste the key into chat or commit it.
+3. Because the Debian disk is full, use Tailscale's official static binaries in RAM (`/dev/shm`) instead of installing the 77 MB package:
 
-The Docker port is bound to the runner's Tailscale IP, not its public interfaces. The workflow saves the viewer screenshot, DOM/canvas state, browser errors, and WebSocket frame statistics as a short-lived Actions artifact. The diagnostic artifact expires after one day; browser login data is not saved as an artifact. A direct path depends on NAT and firewall conditions; Tailscale may use a relay if direct connectivity is unavailable.
+   ```sh
+   mkdir -p /dev/shm/tailscale && cd /dev/shm/tailscale
+   curl -fLO https://pkgs.tailscale.com/stable/tailscale_1.104.1_amd64.tgz
+   tar xzf tailscale_1.104.1_amd64.tgz
+   cd tailscale_1.104.1_amd64
+   sudo mkdir -p /run/tailscale
+   sudo ./tailscaled --state=/dev/shm/tailscaled.state >/dev/shm/tailscaled.log 2>&1 &
+   sleep 2
+   sudo ./tailscale up
+   ```
+
+   Complete the login link once. This temporary setup uses RAM rather than installing the package on disk; it must be started again after reboot.
+4. Run [Temporary remote ChatGPT VNC](https://github.com/AmrUser-48/test-web/actions/workflows/remote-chatgpt-browser.yml). The workflow summary shows the runner's private `100.x.y.z` address.
+5. Open TigerVNC Viewer on Debian and enter `100.x.y.z::5900`, replacing the example IP with the one in the workflow summary.
+6. To check whether the route is direct, run `sudo ./tailscale ping 100.x.y.z` from the directory where the static binary was unpacked. The output should say `direct`; `DERP` means Tailscale is relaying traffic.
+
+The VNC port is not exposed to the public internet; it is bound only to the runner's private Tailscale address. A direct peer-to-peer route depends on NAT and firewall conditions, so Tailscale may fall back to a relay. Cancel the Actions run to stop the session early.
 
 ## Local preview
 
