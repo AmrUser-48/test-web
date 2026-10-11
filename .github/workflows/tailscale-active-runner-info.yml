@@ -45,7 +45,14 @@ jobs:
               matches.append((ip4, peer.get("HostName", "unknown"), peer.get("DNSName", "")))
 
           if not matches:
-              print("No online macOS peers are currently visible in this tailnet.")
+              print("No online macOS peers matched the OS filter. Visible peers:")
+              for peer in peers.values():
+                  hostinfo = peer.get("Hostinfo") or {}
+                  print(
+                      f"  host={peer.get('HostName', 'unknown')} "
+                      f"os={hostinfo.get('OS', peer.get('OS', 'unknown'))} "
+                      f"online={peer.get('Online')} ips={peer.get('TailscaleIPs')}"
+                  )
               sys.exit(0)
 
           for ip, hostname, dnsname in matches:
