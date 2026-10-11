@@ -136,7 +136,11 @@ jobs:
             -restart -agent
 
           sudo launchctl enable system/com.apple.screensharing || true
+          # On hosted macOS, kickstart alone may not load the socket-activated
+          # Screen Sharing launch daemon. Bootstrap its plist before probing 5900.
+          sudo launchctl bootstrap system /System/Library/LaunchDaemons/com.apple.screensharing.plist || true
           sudo launchctl kickstart -k system/com.apple.screensharing || true
+          sudo launchctl print system/com.apple.screensharing || true
           sleep 3
 
           TAILSCALE_IP="$(tailscale ip -4 | head -n 1)"
