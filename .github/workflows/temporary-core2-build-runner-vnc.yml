@@ -323,13 +323,13 @@ jobs:
           mkdir -p "$HOME/.config/xfce4" "$HOME/.config/gtk-3.0" "$HOME/.config/google-chrome"
 
           # Close Chrome cleanly before archiving its cookies/profile databases.
-          mapfile -t chrome_pids < <(pgrep -u "$(id -u)" -f '/opt/google/chrome/chrome' || true)
+          mapfile -t chrome_pids < <(pgrep -u "$(id -u)" -x chrome || true)
           for pid in "${chrome_pids[@]}"; do
-            [[ "$pid" == "$" ]] || kill -TERM "$pid" 2>/dev/null || true
+            kill -TERM "$pid" 2>/dev/null || true
           done
           sleep 3
           for pid in "${chrome_pids[@]}"; do
-            [[ "$pid" == "$" ]] || kill -KILL "$pid" 2>/dev/null || true
+            kill -KILL "$pid" 2>/dev/null || true
           done
           find "$HOME/.config/google-chrome" -maxdepth 2 -name 'Singleton*' -delete 2>/dev/null || true
 
@@ -346,7 +346,7 @@ jobs:
           for path in "${paths[@]}"; do
             [[ -e "$HOME/$path" ]] && existing+=("$path")
           done
-          if (("${#existing[@]}" == 0)); then
+          if [[ "${#existing[@]}" -eq 0 ]]; then
             echo "::error::No state paths were available to save."
             exit 1
           fi
