@@ -38,10 +38,16 @@ The Ubuntu option uses `.github/workflows/temporary-core2-build-runner-vnc.yml`,
 
 ## First launch
 
-A fine-grained GitHub personal access token is needed to dispatch and cancel workflows. Scope it to `AmrUser-48/test-web` and grant **Actions: Read and write**:
+A GitHub personal access token is needed to dispatch and cancel workflows. Start with a fine-grained token scoped to `AmrUser-48/test-web` with **Actions: Read and write**:
 https://github.com/settings/personal-access-tokens/new
 
-The launcher prompts for the token without echoing it and saves it to `~/.config/macos-runner-launcher/token` with mode `0600`.
+If GitHub still returns `403 Resource not accessible by personal access token` despite those permissions, use a **classic PAT with the `repo` scope** instead. The same error has been reported for correctly permissioned fine-grained tokens; this workaround has been reported to work. A classic `repo` token grants broader repository access, so keep it private and use it only if the fine-grained token fails. GitHub's endpoint requirements are documented here: https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event
+
+The launcher prompts for the token without echoing it and saves it to `~/.config/macos-runner-launcher/token` with mode `0600`. To replace a saved token, remove that file and run the launcher again:
+```sh
+rm -f ~/.config/macos-runner-launcher/token
+python3 ~/.local/bin/macos-runner-one-click.py --target ubuntu
+```
 
 It also prompts once for the same `VNC_PASSWORD` configured in the repository's Actions secrets. It writes a TigerVNC-compatible password file to `~/.config/tigervnc/runner-passwd` (directory mode `0700`, file mode `0600`). Subsequent connections use that file through `vncviewer -passwd`, so no VNC password prompt is shown. If the repository secret changes, run:
 
