@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: macos-chatgpt-vnc-v2
+  group: macos-chatgpt-vnc-v3
   cancel-in-progress: true
 
 jobs:
@@ -137,6 +137,9 @@ jobs:
             exit 1
           fi
           echo "TAILSCALE_IP=$TAILSCALE_IP" >> "$GITHUB_ENV"
+          printf 'os=macOS\nhostname=%s\ntailscale_ip=%s\n' "$(hostname)" "$TAILSCALE_IP" > "$RUNNER_TEMP/macos-runner-info.txt"
+          echo "MACOS_RUNNER_HOSTNAME=$(hostname)"
+          echo "MACOS_RUNNER_TAILSCALE_IP=$TAILSCALE_IP"
 
           echo "=== Port 5900 listener ==="
           lsof -nP -iTCP:5900 -sTCP:LISTEN || true
@@ -240,6 +243,14 @@ jobs:
         with:
           name: macos-tailscale-ssh-key-${{ github.run_id }}
           path: ${{ runner.temp }}/macos-runner-ssh
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload verified macOS runner address
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-runner-address-${{ github.run_id }}
+          path: ${{ runner.temp }}/macos-runner-info.txt
           if-no-files-found: error
           retention-days: 1
 
