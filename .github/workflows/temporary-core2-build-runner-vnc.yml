@@ -17,7 +17,7 @@ on:
 
 permissions:
   contents: read
-  actions: read
+  actions: write
 
 concurrency:
   group: temporary-core2-build-runner-vnc
@@ -111,7 +111,8 @@ jobs:
                   if artifact.get("expired") or not artifact.get("name", "").startswith("core2-vnc-state-"):
                       continue
                   run = artifact.get("workflow_run") or {}
-                  if run.get("id") == int(os.environ["GITHUB_RUN_ID"]):
+                  current_name = f"core2-vnc-state-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+                  if artifact.get("name") == current_name:
                       continue
                   if run.get("head_branch") != os.environ.get("GITHUB_REF_NAME"):
                       continue
@@ -441,10 +442,56 @@ jobs:
         if: always() && steps.snapshot-state.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: core2-vnc-state-${{ github.run_id }}
+          name: core2-vnc-state-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/core2-vnc-state.tar.gz.enc
           if-no-files-found: error
           retention-days: 30
+
+      - name: Keep only the newest encrypted state backup
+        if: steps.snapshot-state.outcome == 'success' && steps.upload-state.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_ARTIFACT_NAME: core2-vnc-state-${{ github.run_id }}-${{ github.run_attempt }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          current_name = os.environ["CURRENT_ARTIFACT_NAME"]
+          base = f"https://api.github.com/repos/{repo}/actions/artifacts"
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": "Bearer " + token,
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "core2-vnc-state-prune",
+          }
+          try:
+              request = urllib.request.Request(base + "?per_page=100", headers=headers)
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  artifacts = json.load(response).get("artifacts", [])
+              for artifact in artifacts:
+                  name = artifact.get("name", "")
+                  if not name.startswith("core2-vnc-state-") or name == current_name:
+                      continue
+                  delete = urllib.request.Request(
+                      base + "/" + str(artifact["id"]),
+                      data=b"",
+                      method="DELETE",
+                      headers=headers,
+                  )
+                  try:
+                      with urllib.request.urlopen(delete, timeout=20):
+                          print("Removed older encrypted state backup: " + name)
+                  except urllib.error.HTTPError as exc:
+                      print(f"::warning::Could not remove old backup {name}: HTTP {exc.code}")
+          except Exception as exc:
+              print("::warning::Could not prune old encrypted state backups: " + str(exc))
+          PY
 
       - name: Stop VNC and SSH services
         if: always()
