@@ -181,7 +181,7 @@ jobs:
                           greeting += chunk
                       if not greeting.startswith(b"RFB "):
                           raise RuntimeError(f"unexpected greeting: {greeting!r}")
-                      sock.sendall(b"RFB 003.008\\n")
+                      sock.sendall(b"RFB 003.008\n")
                       count = sock.recv(1)
                       if not count:
                           raise RuntimeError("VNC closed before security negotiation")
