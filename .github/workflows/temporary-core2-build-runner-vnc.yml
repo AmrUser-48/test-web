@@ -17,6 +17,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: temporary-core2-build-runner-vnc
@@ -62,12 +63,79 @@ jobs:
           sudo tailscale set --accept-dns=false
 
       - name: Restore encrypted desktop-state cache
+        id: state-cache
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/core2-vnc-state.tar.gz.enc
           key: core2-vnc-state-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             core2-vnc-state-${{ runner.os }}-
+
+      - name: Check whether desktop cache restored a state file
+        id: cached-state
+        shell: bash
+        run: |
+          if [[ -s "$RUNNER_TEMP/core2-vnc-state.tar.gz.enc" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Find latest encrypted desktop backup artifact
+        id: latest-state
+        if: steps.cached-state.outputs.available != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          output = os.environ["GITHUB_OUTPUT"]
+          values = {"run_id": "", "artifact_name": ""}
+          try:
+              request = urllib.request.Request(
+                  f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/actions/artifacts?per_page=100",
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                      "X-GitHub-Api-Version": "2022-11-28",
+                      "User-Agent": "core2-vnc-state-restore",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  artifacts = json.load(response).get("artifacts", [])
+              for artifact in artifacts:
+                  if artifact.get("expired") or not artifact.get("name", "").startswith("core2-vnc-state-"):
+                      continue
+                  run = artifact.get("workflow_run") or {}
+                  if run.get("id") == int(os.environ["GITHUB_RUN_ID"]):
+                      continue
+                  if run.get("head_branch") != os.environ.get("GITHUB_REF_NAME"):
+                      continue
+                  values = {
+                      "run_id": str(run.get("id", "")),
+                      "artifact_name": artifact["name"],
+                  }
+                  break
+          except Exception as exc:
+              print("::warning::Could not locate previous encrypted state artifact: " + str(exc))
+          with open(output, "a", encoding="utf-8") as stream:
+              for key, value in values.items():
+                  stream.write(f"{key}={value}\n")
+          PY
+
+      - name: Download encrypted backup when cache is unavailable
+        if: steps.cached-state.outputs.available != 'true' && steps.latest-state.outputs.artifact_name != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.latest-state.outputs.artifact_name }}
+          run-id: ${{ steps.latest-state.outputs.run_id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}
 
       - name: Restore desktop, browser profile, and files
         shell: bash
