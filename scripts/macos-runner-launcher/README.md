@@ -76,7 +76,7 @@ GitHub may evict caches after 7 days without access or due to its storage limit,
 4. Opens `vncviewer` using the saved local password file.
 5. If TigerVNC closes or crashes, the GitHub-hosted runner stays alive until its configured session timeout; the launcher prints the VNC address and reconnect instructions. Press Ctrl+C in the launcher terminal to explicitly cancel the remote workflow.
 
-The macOS workflow is currently known to have a hosted-runner limitation: Apple's Screen Sharing service has not consistently opened port 5900. The launcher will refuse to connect unless that Mac really answers VNC. The Ubuntu VNC workflow is the available path for a working graphical session.
+**Known limitation — GitHub-hosted macOS VNC:** run #16 confirmed that the macOS 15 Apple Silicon VM did not start Apple's Screen Sharing service: `MACOS_VNC_READY=0`, no RFB greeting on port 5900, and `screensharingd` reported `not running` after the `kickstart`/ `launchctl` attempts. The workflow now fails immediately instead of appearing ready and idling for the full session duration. The log also showed `actions/upload-artifact@v4` returning `ENOTFOUND` for both SSH-key and address uploads; that is a separate GitHub artifact-service/DNS failure and should not be confused with the VNC failure. A fully working native macOS desktop requires a macOS runner where Screen Sharing/screen-capture permissions are available. For a working graphical session on the current setup, use the Ubuntu VNC workflow.
 
 ## Remove local launcher files
 
