@@ -45,6 +45,7 @@ jobs:
           docs = Path("scripts/macos-runner-launcher/README.md").read_text()
           workflow = Path(".github/workflows/temporary-core2-build-runner-vnc.yml").read_text()
           macos_workflow = Path(".github/workflows/macos-chatgpt-vnc.yml").read_text()
+          restore_step = workflow.split("- name: Restore desktop, browser profile, and files", 1)[1].split("- name: Install Core 2 build tools", 1)[0]
 
           required = {
               "macOS workflow target": '"macos-chatgpt-vnc.yml"' in launcher,
@@ -60,6 +61,9 @@ jobs:
               "encrypted desktop state": "openssl enc -aes-256-cbc -pbkdf2 -salt" in workflow,
               "cache restoration": "actions/cache/restore@v4" in workflow,
               "backup artifact fallback": "actions/download-artifact@v4" in workflow,
+              "state restore directory outside home": 'restore_dir="/tmp/core2-vnc-state-restore-$GITHUB_RUN_ID"' in restore_step,
+              "state extraction has timeout": "timeout --foreground --signal=TERM --kill-after=10s 240s bash -o pipefail -c" in restore_step,
+              "future snapshots exclude runner tool cache": "--exclude='./work/_tool'" in workflow,
               "state snapshot before service shutdown": workflow.index("Snapshot and encrypt desktop state") < workflow.index("Stop VNC and SSH services"),
               "docs explain password persistence": "no VNC password prompt" in docs,
               "macOS workflow is manual-only": "push:" not in macos_workflow,
