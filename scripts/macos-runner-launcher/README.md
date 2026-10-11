@@ -74,7 +74,7 @@ GitHub may evict caches after 7 days without access or due to its storage limit,
 2. Looks for a new peer named `github-macos-<run-id>` or `github-core2-<run-id>`.
 3. Checks the peer's OS and verifies VNC speaks RFB on port 5900.
 4. Opens `vncviewer` using the saved local password file.
-5. Requests cancellation of that workflow when the viewer closes or Ctrl+C is pressed.
+5. If TigerVNC closes or crashes, the GitHub-hosted runner stays alive until its configured session timeout; the launcher prints the VNC address and reconnect instructions. Press Ctrl+C in the launcher terminal to explicitly cancel the remote workflow.
 
 The macOS workflow is currently known to have a hosted-runner limitation: Apple's Screen Sharing service has not consistently opened port 5900. The launcher will refuse to connect unless that Mac really answers VNC. The Ubuntu VNC workflow is the available path for a working graphical session.
 
