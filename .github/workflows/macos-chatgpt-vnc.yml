@@ -53,6 +53,12 @@ jobs:
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
 
+      - name: Preserve system DNS for GitHub artifact uploads
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo tailscale set --accept-dns=false
+
       - name: Report hardware and launch Chrome at ChatGPT
         shell: bash
         run: |
@@ -167,10 +173,10 @@ jobs:
             echo "## macOS runner — private Tailscale access"
             echo
             echo "- Runner: macOS 15 / Apple Silicon"
-            echo "- Tailscale IP: `$TAILSCALE_IP`"
+            echo "- Tailscale IP: $TAILSCALE_IP"
             if [[ "$ready" == "1" ]]; then
-              echo "- VNC address for TigerVNC: `$TAILSCALE_IP::5900`"
-              echo "- VNC password: first 8 characters of the existing `VNC_PASSWORD` secret"
+              echo "- VNC address for TigerVNC: ${TAILSCALE_IP}::5900"
+              echo "- VNC password: first 8 characters of the VNC_PASSWORD secret"
             else
               echo "- Native macOS VNC: unavailable on this headless runner (no active WindowServer/Screen Sharing listener)."
               echo "- Use the SSH endpoint provided by the next step."
@@ -233,10 +239,10 @@ jobs:
             echo
             echo "### Private SSH access"
             echo
-            echo "- SSH address: `$SSH_USER@$TAILSCALE_IP` (port 22, Tailscale IP only)"
-            echo "- Download artifact: `macos-tailscale-ssh-key-${GITHUB_RUN_ID}`"
-            echo "- The private key is encrypted; use the full `VNC_PASSWORD` secret as its passphrase."
-            echo "- Debian command after extracting the artifact: `chmod 600 macos-runner-ssh && ssh -i macos-runner-ssh $SSH_USER@$TAILSCALE_IP`"
+            echo "- SSH address: ${SSH_USER}@${TAILSCALE_IP} (port 22, Tailscale IP only)"
+            echo "- Download artifact: macos-tailscale-ssh-key-${GITHUB_RUN_ID}"
+            echo "- The private key is encrypted; use the full VNC_PASSWORD secret as its passphrase."
+            echo "- Debian command after extracting the artifact: chmod 600 macos-runner-ssh && ssh -i macos-runner-ssh ${SSH_USER}@${TAILSCALE_IP}"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "PASS: SSH is listening on the private Tailscale IP $TAILSCALE_IP:22."
 
