@@ -1,0 +1,127 @@
+name: Temporary Core 2 build runner (SSH + VNC)
+
+on:
+  workflow_dispatch:
+    inputs:
+      session_minutes:
+        description: How long to keep SSH and VNC available
+        required: true
+        type: choice
+        options:
+          - "30"
+          - "60"
+          - "180"
+          - "300"
+          - "350"
+        default: "60"
+
+permissions:
+  contents: read
+
+jobs:
+  shell-vnc:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      CFLAGS: "-O2 -march=core2 -mtune=core2"
+      CXXFLAGS: "-O2 -march=core2 -mtune=core2"
+      FFLAGS: "-O2 -march=core2 -mtune=core2"
+      FCFLAGS: "-O2 -march=core2 -mtune=core2"
+      SESSION_MINUTES: ${{ inputs.session_minutes }}
+      VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+    steps:
+      - name: Install build tools, lightweight desktop, VNC and noVNC
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [[ -z "$VNC_PASSWORD" || ${#VNC_PASSWORD} -lt 8 ]]; then
+            echo "::error::Add VNC_PASSWORD in Settings → Secrets and variables → Actions. Use at least 8 characters."
+            exit 1
+          fi
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential gcc g++ make cmake ninja-build pkg-config \
+            git ca-certificates curl wget xz-utils bzip2 unzip ccache \
+            dpkg-dev devscripts debhelper fakeroot quilt autoconf automake \
+            libtool gettext python3 python3-venv meson \
+            xfce4 xfce4-terminal dbus-x11 tigervnc-standalone-server novnc websockify
+          sudo tee /etc/dpkg/buildflags.conf >/dev/null <<'FLAGS'
+          SET CFLAGS -O2 -march=core2 -mtune=core2
+          SET CXXFLAGS -O2 -march=core2 -mtune=core2
+          SET FFLAGS -O2 -march=core2 -mtune=core2
+          SET FCFLAGS -O2 -march=core2 -mtune=core2
+          FLAGS
+          mkdir -p "$HOME/.vnc"
+          printf '%s\n' "$VNC_PASSWORD" | vncpasswd -f > "$HOME/.vnc/passwd"
+          chmod 600 "$HOME/.vnc/passwd"
+          unset VNC_PASSWORD
+          cat > "$HOME/.vnc/xstartup" <<'XSTART'
+          #!/bin/sh
+          unset SESSION_MANAGER
+          unset DBUS_SESSION_BUS_ADDRESS
+          exec dbus-launch --exit-with-session startxfce4
+          XSTART
+          chmod +x "$HOME/.vnc/xstartup"
+          vncserver :1 -localhost yes -geometry 1440x900 -depth 24
+          nohup websockify --web=/usr/share/novnc/ 127.0.0.1:6080 localhost:5901 >/tmp/novnc.log 2>&1 &
+          echo "--- Runner ---"
+          cat /etc/os-release
+          uname -a
+          gcc --version | head -n 1
+          echo "--- Core 2 flags ---"
+          dpkg-buildflags --get CFLAGS
+          dpkg-buildflags --get CXXFLAGS
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:6080/vnc.html >/dev/null; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:6080/vnc.html >/dev/null
+          echo "VNC desktop started on localhost:5901; noVNC web client on localhost:6080."
+
+      - name: Start HTTPS tunnel for noVNC
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o "$RUNNER_TEMP/cloudflared"
+          chmod +x "$RUNNER_TEMP/cloudflared"
+          nohup "$RUNNER_TEMP/cloudflared" tunnel --url http://127.0.0.1:6080 --no-autoupdate >"$RUNNER_TEMP/cloudflared-vnc.log" 2>&1 &
+          url=""
+          for _ in $(seq 1 60); do
+            url="$(grep -Eo 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "$RUNNER_TEMP/cloudflared-vnc.log" | head -n 1 || true)"
+            if [[ -n "$url" ]]; then break; fi
+            sleep 2
+          done
+          if [[ -z "$url" ]]; then
+            cat "$RUNNER_TEMP/cloudflared-vnc.log" || true
+            echo "::error::Could not establish the noVNC HTTPS tunnel."
+            exit 1
+          fi
+          {
+            echo "## Temporary Core 2 build runner — SSH + VNC"
+            echo
+            echo "VNC browser URL: ${url}/vnc.html"
+            echo
+            echo "At the noVNC page, connect to the desktop and enter the VNC password stored as repository secret VNC_PASSWORD."
+            echo "SSH remains available through the separate Upterm step."
+            echo "Session duration: ${SESSION_MINUTES} minutes. Cancel this workflow to stop both services."
+            echo
+            echo "The VNC server listens on localhost only; the public tunnel reaches the noVNC web client, and the VNC server still requires its password."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "noVNC HTTPS URL: ${url}/vnc.html"
+          curl --connect-timeout 5 --max-time 15 -fsS "${url}/vnc.html" -o /dev/null
+
+      - name: Open temporary SSH shell
+        uses: owenthereal/action-upterm@v2
+        with:
+          limit-access-to-actor: true
+          wait-timeout-minutes: 360
+
+      - name: Keep desktop session alive
+        if: always()
+        shell: bash
+        run: sleep "$((SESSION_MINUTES * 60))"
+
+      - name: Stop VNC desktop
+        if: always()
+        shell: bash
+        run: vncserver -kill :1 >/dev/null 2>&1 || true
