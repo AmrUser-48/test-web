@@ -6,6 +6,10 @@ The Python launcher in this directory can start either:
 
 It waits for the Tailscale peer belonging to that exact workflow run, checks that it identifies as the expected operating system, verifies an actual VNC/RFB greeting on port 5900, and only then starts TigerVNC. It does not choose an old IP or the wrong OS.
 
+## Automated validation
+
+The repository workflow [Validate remote desktop launchers](../../actions/workflows/validate-remote-desktop-launchers.yml) checks Python syntax, installer shell syntax, launcher target selection, VNC password-file handling, and the Ubuntu desktop persistence/theme configuration on changes.
+
 ## Local requirements
 
 - Python 3 (standard library only)
