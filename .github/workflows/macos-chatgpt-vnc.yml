@@ -14,9 +14,6 @@ on:
           - "300"
           - "350"
         default: "350"
-  push:
-    paths:
-      - ".github/workflows/macos-chatgpt-vnc.yml"
 
 permissions:
   contents: read
@@ -170,8 +167,19 @@ jobs:
             echo "PASS: Screen Sharing sent RFB greeting: $reply"
           else
             echo "MACOS_VNC_READY=0" >> "$GITHUB_ENV"
-            echo "::warning::This hosted macOS VM has no active Screen Sharing listener; continuing with SSH over Tailscale."
+            echo "::error::Native macOS VNC is unavailable: the GitHub-hosted VM has no active Screen Sharing listener on port 5900."
+            echo "::error::kickstart/launchctl activation did not start screensharingd. macOS screen-capture authorization must be enabled interactively or through supported device management."
             sudo launchctl print system/com.apple.screensharing || true
+            {
+              echo
+              echo "## FAILURE: macOS VNC did not start"
+              echo
+              echo "- No RFB greeting was received from 127.0.0.1:5900."
+              echo "- `screensharingd` was not running after activation attempts."
+              echo "- The workflow is stopping now instead of consuming the full session timeout."
+              echo "- A usable macOS desktop requires a runner where Screen Sharing/screen-capture permissions are available."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
 
           {
