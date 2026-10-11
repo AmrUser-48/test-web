@@ -53,6 +53,47 @@ jobs:
         uses: tailscale/github-action@v4
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          hostname: github-core2-${{ github.run_id }}
+
+      - name: Preserve system DNS for GitHub cache and artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo tailscale set --accept-dns=false
+
+      - name: Restore encrypted desktop-state cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/core2-vnc-state.tar.gz.enc
+          key: core2-vnc-state-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            core2-vnc-state-${{ runner.os }}-
+
+      - name: Restore desktop, browser profile, and files
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/core2-vnc-state.tar.gz.enc"
+          restore_dir="$RUNNER_TEMP/core2-vnc-state-restore"
+          rm -rf "$restore_dir"
+          mkdir -p "$restore_dir" "$HOME"
+
+          if [[ -s "$archive" ]]; then
+            if openssl enc -d -aes-256-cbc -pbkdf2 -salt \
+              -pass env:TAILSCALE_AUTHKEY -in "$archive" |
+              tar -xzf - -C "$restore_dir"; then
+              cp -a "$restore_dir/." "$HOME/"
+              echo "DESKTOP_STATE_RESTORED=1" >> "$GITHUB_ENV"
+              echo "Restored encrypted XFCE settings, Chrome profile, Desktop, Documents, and Downloads."
+            else
+              echo "::warning::Could not decrypt the previous state archive; starting with a fresh desktop."
+              echo "DESKTOP_STATE_RESTORED=0" >> "$GITHUB_ENV"
+            fi
+          else
+            echo "No saved desktop state found; starting with the initial dark deskbar layout."
+            echo "DESKTOP_STATE_RESTORED=0" >> "$GITHUB_ENV"
+          fi
+          rm -rf "$restore_dir"
 
       - name: Install Core 2 build tools and private SSH/VNC services
         shell: bash
@@ -129,23 +170,24 @@ jobs:
             xfconf-query -c "$channel" -p "$property" --create --type "$type" --set "$value"
           }
 
-          # GTK widgets, window borders, and the panel use the Arc-Dark style.
-          set_xfconf xsettings /Net/ThemeName string Arc-Dark
-          set_xfconf xfwm4 /general/theme string Arc-Dark
-          set_xfconf xfce4-panel /panels/dark-mode bool true
-
-          # XFCE deskbar mode (2): a vertical panel with horizontal plugins,
-          # anchored at the upper-right corner of the 1440x900 VNC desktop.
-          set_xfconf xfce4-panel /panels/panel-1/mode int 2
-          set_xfconf xfce4-panel /panels/panel-1/position string 'p=2;x=0;y=0'
-          set_xfconf xfce4-panel /panels/panel-1/position-locked bool true
-          set_xfconf xfce4-panel /panels/panel-1/length int 55
-          set_xfconf xfce4-panel /panels/panel-1/length-adjust bool true
-          set_xfconf xfce4-panel /panels/panel-1/size int 48
-          set_xfconf xfce4-panel /panels/panel-1/nrows int 2
+          # Only seed Arc-Dark/right-side deskbar defaults on the first session.
+          # On later sessions, leave the restored XFCE preferences untouched.
+          if [[ "${DESKTOP_STATE_RESTORED:-0}" != "1" ]]; then
+            set_xfconf xsettings /Net/ThemeName string Arc-Dark
+            set_xfconf xfwm4 /general/theme string Arc-Dark
+            set_xfconf xfce4-panel /panels/dark-mode bool true
+            set_xfconf xfce4-panel /panels/panel-1/mode int 2
+            set_xfconf xfce4-panel /panels/panel-1/position string 'p=2;x=0;y=0'
+            set_xfconf xfce4-panel /panels/panel-1/position-locked bool true
+            set_xfconf xfce4-panel /panels/panel-1/length int 55
+            set_xfconf xfce4-panel /panels/panel-1/length-adjust bool true
+            set_xfconf xfce4-panel /panels/panel-1/size int 48
+            set_xfconf xfce4-panel /panels/panel-1/nrows int 2
+          fi
 
           # Launch ChatGPT only after the dark theme and panel settings are live.
-          google-chrome-stable --no-first-run --no-default-browser-check https://chatgpt.com >/tmp/chromium.log 2>&1 &
+          mkdir -p "$HOME/.config/google-chrome"
+          google-chrome-stable --user-data-dir="$HOME/.config/google-chrome" --no-first-run --no-default-browser-check https://chatgpt.com >/tmp/chromium.log 2>&1 &
           wait "$XFCE_PID"
           XSTART
           chmod +x "$HOME/.vnc/xstartup"
@@ -269,6 +311,72 @@ jobs:
       - name: Keep SSH and VNC available
         shell: bash
         run: sleep "$((SESSION_MINUTES * 60))"
+
+      - name: Snapshot and encrypt desktop state
+        id: snapshot-state
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          state_file="$RUNNER_TEMP/core2-vnc-state.tar.gz.enc"
+          mkdir -p "$HOME/Desktop" "$HOME/Documents" "$HOME/Downloads"
+          mkdir -p "$HOME/.config/xfce4" "$HOME/.config/gtk-3.0" "$HOME/.config/google-chrome"
+
+          # Close Chrome cleanly before archiving its cookies/profile databases.
+          mapfile -t chrome_pids < <(pgrep -u "$(id -u)" -f '/opt/google/chrome/chrome' || true)
+          for pid in "${chrome_pids[@]}"; do
+            [[ "$pid" == "$" ]] || kill -TERM "$pid" 2>/dev/null || true
+          done
+          sleep 3
+          for pid in "${chrome_pids[@]}"; do
+            [[ "$pid" == "$" ]] || kill -KILL "$pid" 2>/dev/null || true
+          done
+          find "$HOME/.config/google-chrome" -maxdepth 2 -name 'Singleton*' -delete 2>/dev/null || true
+
+          paths=(
+            .config/xfce4
+            .config/gtk-3.0
+            .config/google-chrome
+            .local/share/applications
+            Desktop
+            Documents
+            Downloads
+          )
+          existing=()
+          for path in "${paths[@]}"; do
+            [[ -e "$HOME/$path" ]] && existing+=("$path")
+          done
+          if (("${#existing[@]}" == 0)); then
+            echo "::error::No state paths were available to save."
+            exit 1
+          fi
+
+          # The cache/artifact contains ciphertext only; the existing random
+          # Tailscale auth key is the encryption passphrase.
+          tar --exclude='*/Cache/*' --exclude='*/Code Cache/*' \
+              --exclude='*/GPUCache/*' --exclude='*/ShaderCache/*' \
+              --exclude='*/BrowserMetrics/*' -C "$HOME" -czf - "${existing[@]}" |
+            openssl enc -aes-256-cbc -pbkdf2 -salt \
+              -pass env:TAILSCALE_AUTHKEY -out "$state_file"
+          chmod 600 "$state_file"
+          test -s "$state_file"
+          echo "Encrypted desktop state saved ($(du -h "$state_file" | cut -f1))."
+
+      - name: Save encrypted desktop-state cache
+        if: always() && steps.snapshot-state.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/core2-vnc-state.tar.gz.enc
+          key: core2-vnc-state-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload encrypted desktop-state backup
+        if: always() && steps.snapshot-state.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: core2-vnc-state-${{ github.run_id }}
+          path: ${{ runner.temp }}/core2-vnc-state.tar.gz.enc
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Stop VNC and SSH services
         if: always()
