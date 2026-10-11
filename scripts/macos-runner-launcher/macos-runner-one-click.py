@@ -96,7 +96,14 @@ def github_api(method: str, path: str, payload: dict | None = None):
         if e.code == 401:
             detail = "Token is invalid/expired. Create a fine-grained token with Actions read/write for AmrUser-48/test-web."
         elif e.code == 403:
-            detail = "GitHub denied the request. Token needs Actions read/write access to AmrUser-48/test-web. " + detail
+            detail = (
+                "GitHub refused workflow dispatch. Check all three settings: "
+                "(1) token Resource owner is AmrUser-48; "
+                "(2) Repository access explicitly includes test-web; "
+                "(3) Repository permissions > Actions is Read and write. "
+                "The GitHub account that owns the token must also have write access to the repository. "
+                "A 403 here does not by itself mean the token text was mistyped. API response: " + detail
+            )
         elif e.code == 404:
             detail = "Repository/workflow was not found or token cannot access it. " + detail
         die(f"GitHub API returned HTTP {e.code}: {detail}")
