@@ -27,22 +27,38 @@ jobs:
       BROWSER_ACCESS_PASSWORD: ${{ secrets.BROWSER_ACCESS_PASSWORD }}
       SESSION_MINUTES: ${{ inputs.session_minutes }}
     steps:
-      - name: Validate access password
+      - name: Validate access configuration
         shell: bash
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
           if [[ -z "$BROWSER_ACCESS_PASSWORD" || ${#BROWSER_ACCESS_PASSWORD} -lt 20 ]]; then
             echo "::error::Add BROWSER_ACCESS_PASSWORD under Settings → Secrets and variables → Actions. Use at least 20 characters."
             exit 1
           fi
           if [[ ! "$BROWSER_ACCESS_PASSWORD" =~ ^[A-Za-z0-9._-]+$ ]]; then
-            echo "::error::Use only A-Z, a-z, 0-9, dot, underscore, or hyphen in BROWSER_ACCESS_PASSWORD; LinuxServer templated config can break on shell-special characters."
+            echo "::error::Use only A-Z, a-z, 0-9, dot, underscore, or hyphen in BROWSER_ACCESS_PASSWORD."
             exit 1
           fi
+          if [[ -z "$TAILSCALE_AUTHKEY" ]]; then
+            echo "::error::Add an ephemeral, reusable Tailscale auth key as the TAILSCALE_AUTHKEY repository secret."
+            exit 1
+          fi
+
+      - name: Connect runner to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
 
       - name: Start Chromium directly at ChatGPT
         shell: bash
         run: |
           set -euo pipefail
+          TAILSCALE_IP="$(tailscale ip -4 | head -n 1)"
+          if [[ -z "$TAILSCALE_IP" ]]; then
+            echo "::error::Tailscale did not assign the runner a private IP."
+            exit 1
+          fi
           docker pull lscr.io/linuxserver/chromium:latest
           docker run -d --name remote-chatgpt --shm-size=1g \
             -e TZ=Etc/UTC \
@@ -56,11 +72,11 @@ jobs:
             -e CHROME_CLI=/config/.config/chromium\ https://chatgpt.com \
             -e CUSTOM_USER=remote \
             -e PASSWORD="$BROWSER_ACCESS_PASSWORD" \
-            -p 127.0.0.1:3000:3000 \
+            -p "${TAILSCALE_IP}:3000:3000" \
             lscr.io/linuxserver/chromium:latest
           ready=0
           for _ in $(seq 1 60); do
-            if curl -fsS -u "remote:$BROWSER_ACCESS_PASSWORD" http://127.0.0.1:3000/ -o /tmp/chromium-page.html; then ready=1; break; fi
+            if curl -fsS -u "remote:$BROWSER_ACCESS_PASSWORD" "http://$TAILSCALE_IP:3000/" -o /tmp/chromium-page.html; then ready=1; break; fi
             sleep 5
           done
           if [[ "$ready" != 1 ]]; then
@@ -80,36 +96,28 @@ jobs:
             echo "::error::Chromium did not receive the expected user-data directory followed by the ChatGPT URL."
             exit 1
           fi
-          echo "Local interface responds and Chromium has the intended startup URL."
+          echo "Private Tailscale interface responds and Chromium has the intended startup URL."
+          echo "TAILSCALE_IP=$TAILSCALE_IP" >> "$GITHUB_ENV"
 
-      - name: Start HTTPS tunnel and test WebSocket
+      - name: Publish private Tailscale URL and test WebSocket
         shell: bash
         run: |
           set -euo pipefail
-          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
-          chmod +x /tmp/cloudflared
-          nohup /tmp/cloudflared tunnel --url http://127.0.0.1:3000 --no-autoupdate \
-            >/tmp/cloudflared.log 2>&1 &
-          ready=0
-          for _ in $(seq 1 60); do
-            url="$(grep -Eo 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/cloudflared.log | head -n 1 || true)"
-            if [[ -n "$url" ]]; then ready=1; break; fi
-            sleep 2
-          done
-          if [[ "$ready" != 1 ]]; then
-            cat /tmp/cloudflared.log || true
-            echo "::error::Could not establish the Cloudflare tunnel."
+          TAILSCALE_IP="$(tailscale ip -4 | head -n 1)"
+          if [[ -z "$TAILSCALE_IP" ]]; then
+            echo "::error::The runner has no Tailscale IP."
             exit 1
           fi
-          echo "Remote Chromium URL: $url"
+          url="http://${TAILSCALE_IP}:3000"
+          echo "Private remote Chromium URL: $url"
           {
-            echo "## Temporary remote ChatGPT Chromium"
+            echo "## Remote ChatGPT Chromium (private Tailscale connection)"
             echo
             echo "$url"
             echo
+            echo "Open this URL only from a device signed into the same Tailscale network."
             echo "Browser authentication: username remote; password is the BROWSER_ACCESS_PASSWORD secret."
-            echo "Chromium is configured to open https://chatgpt.com automatically."
-            echo "Session ends in $SESSION_MINUTES minutes; cancel this workflow to stop earlier."
+            echo "This URL is not a public tunnel. The session ends in $SESSION_MINUTES minutes; cancel this workflow to stop earlier."
           } >> "$GITHUB_STEP_SUMMARY"
 
           external_ready=0
@@ -118,15 +126,18 @@ jobs:
             sleep 5
           done
           if [[ "$external_ready" != 1 ]]; then
-            cat /tmp/cloudflared.log || true
-            echo "::error::The external HTTPS URL did not answer with valid authentication."
+            tailscale status || true
+            docker logs --tail=200 remote-chatgpt || true
+            echo "::error::The private Tailscale URL did not answer with valid authentication."
             exit 1
           fi
           if ! grep -qiE 'selkies|chromium' /tmp/external-page.html; then
-            echo "::error::The tunnel returned a page that does not look like the remote Chromium interface."
+            echo "::error::The Tailscale URL returned a page that does not look like the remote Chromium interface."
             head -c 1200 /tmp/external-page.html || true
             exit 1
           fi
+          echo "Tailscale status:"
+          tailscale status || true
 
           # Test with a real browser client. A bare curl HTTP 101 handshake does not
           # speak the Selkies protocol and can make the server stop its capture pipeline.
@@ -136,7 +147,7 @@ jobs:
           npm install --no-audit --no-fund playwright
           npx playwright install --with-deps chromium
 
-          export SELKIES_PUBLIC_URL="$url"
+          export SELKIES_VIEWER_URL="$url"
           node <<'NODE'
           const { chromium } = require('playwright');
           const fs = require('node:fs/promises');
@@ -149,7 +160,7 @@ jobs:
             const sockets = [];
             const diagnosticsDir = path.join(process.env.RUNNER_TEMP, 'selkies-browser-check');
             const report = {
-              publicUrl: process.env.SELKIES_PUBLIC_URL,
+              publicUrl: process.env.SELKIES_VIEWER_URL,
               checkedAt: new Date().toISOString(),
               pageErrors,
               sockets
@@ -161,7 +172,7 @@ jobs:
                 httpCredentials: {
                   username: 'remote',
                   password: process.env.BROWSER_ACCESS_PASSWORD,
-                  origin: new URL(process.env.SELKIES_PUBLIC_URL).origin,
+                  origin: new URL(process.env.SELKIES_VIEWER_URL).origin,
                   send: 'always'
                 },
                 viewport: { width: 1280, height: 800 }
@@ -200,7 +211,7 @@ jobs:
                 socket.on('close', () => { record.closed = true; });
               });
 
-              const response = await page.goto(process.env.SELKIES_PUBLIC_URL, {
+              const response = await page.goto(process.env.SELKIES_VIEWER_URL, {
                 waitUntil: 'domcontentloaded',
                 timeout: 45000
               });
