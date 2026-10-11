@@ -251,6 +251,7 @@ jobs:
           echo "PASS: SSH is listening on the private Tailscale IP $TAILSCALE_IP:22."
 
       - name: Upload encrypted macOS SSH key
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: macos-tailscale-ssh-key-${{ github.run_id }}
@@ -259,6 +260,7 @@ jobs:
           retention-days: 1
 
       - name: Upload verified macOS runner address
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: macos-runner-address-${{ github.run_id }}
