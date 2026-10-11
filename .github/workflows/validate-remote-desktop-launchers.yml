@@ -5,6 +5,7 @@ on:
     paths:
       - "scripts/macos-runner-launcher/**"
       - ".github/workflows/temporary-core2-build-runner-vnc.yml"
+      - ".github/workflows/macos-chatgpt-vnc.yml"
       - ".github/workflows/validate-remote-desktop-launchers.yml"
   workflow_dispatch:
 
@@ -43,6 +44,7 @@ jobs:
           installer = Path("scripts/macos-runner-launcher/install-desktop-launcher.sh").read_text()
           docs = Path("scripts/macos-runner-launcher/README.md").read_text()
           workflow = Path(".github/workflows/temporary-core2-build-runner-vnc.yml").read_text()
+          macos_workflow = Path(".github/workflows/macos-chatgpt-vnc.yml").read_text()
 
           required = {
               "macOS workflow target": '"macos-chatgpt-vnc.yml"' in launcher,
@@ -60,6 +62,8 @@ jobs:
               "backup artifact fallback": "actions/download-artifact@v4" in workflow,
               "state snapshot before service shutdown": workflow.index("Snapshot and encrypt desktop state") < workflow.index("Stop VNC and SSH services"),
               "docs explain password persistence": "no VNC password prompt" in docs,
+              "macOS workflow is manual-only": "\\n  push:\\n" not in macos_workflow,
+              "macOS workflow fails fast if VNC is unavailable": 'echo "::error::Native macOS VNC is unavailable:' in macos_workflow and "No RFB greeting was received" in macos_workflow and "FAILURE: macOS VNC did not start" in macos_workflow,
           }
           for name, passed in required.items():
               print(("PASS" if passed else "FAIL") + ": " + name)
