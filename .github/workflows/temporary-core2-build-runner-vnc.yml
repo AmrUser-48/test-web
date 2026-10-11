@@ -13,7 +13,7 @@ on:
           - "180"
           - "300"
           - "350"
-        default: "60"
+        default: "350"
   push:
     paths:
       - ".github/workflows/temporary-core2-build-runner-vnc.yml"
@@ -36,7 +36,7 @@ jobs:
       FCFLAGS: "-O2 -march=core2 -mtune=core2"
       TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
       VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
-      SESSION_MINUTES: ${{ inputs.session_minutes || '60' }}
+      SESSION_MINUTES: ${{ inputs.session_minutes || '350' }}
 
     steps:
       - name: Validate secrets
