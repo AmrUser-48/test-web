@@ -138,7 +138,7 @@ jobs:
               greeting = recv_exact(sock, 12)
               if not greeting.startswith(b"RFB "):
                   raise RuntimeError(f"Unexpected VNC greeting: {greeting!r}")
-              sock.sendall(b"RFB 003.008\\n")
+              sock.sendall(b"RFB 003.008\n")
               count = recv_exact(sock, 1)[0]
               if count == 0:
                   length = struct.unpack(">I", recv_exact(sock, 4))[0]
@@ -147,11 +147,11 @@ jobs:
               security_types = recv_exact(sock, count)
               if 1 not in security_types:
                   raise RuntimeError(f"VNC offered unexpected security types: {list(security_types)}")
-              sock.sendall(b"\\x01")  # No-auth security; port is Tailscale-only.
+              sock.sendall(b"\x01")  # No-auth security; port is Tailscale-only.
               result = struct.unpack(">I", recv_exact(sock, 4))[0]
               if result != 0:
                   raise RuntimeError(f"VNC security handshake failed: result={result}")
-              sock.sendall(b"\\x01")  # ClientInit: shared session.
+              sock.sendall(b"\x01")  # ClientInit: shared session.
               server_init = recv_exact(sock, 24)
               width, height = struct.unpack(">HH", server_init[:4])
               name_length = struct.unpack(">I", server_init[20:24])[0]
