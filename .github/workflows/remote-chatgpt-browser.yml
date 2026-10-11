@@ -56,7 +56,7 @@ jobs:
             -e TZ=Etc/UTC \
             -e PIXELFLUX_WAYLAND=false \
             -e DISABLE_DRI3=true \
-            -e CHROME_CLI=/config/.config/chromium\\ https://chatgpt.com \
+            -e "CHROME_CLI=/config/.config/chromium https://chatgpt.com" \\
             -p "${TAILSCALE_IP}:5900:5900" \
             lscr.io/linuxserver/chromium:latest
 
@@ -93,7 +93,7 @@ jobs:
           # The container already runs Xvfb; x11vnc shares that same X11 display.
           docker exec remote-chatgpt sh -lc 'apt-get update && apt-get install -y --no-install-recommends x11vnc'
 
-          DISPLAY_NAME="$(docker exec remote-chatgpt sh -lc "ps -eo args | sed -n 's#.*Xvfb \\(:[0-9][0-9]*\\).*#\\1#p' | head -n 1")"
+          DISPLAY_NAME="$(docker exec remote-chatgpt sh -lc 'ps -ef | grep -oE "Xvfb :[0-9]+" | head -n 1 | sed "s/Xvfb //"')"
           if [[ -z "$DISPLAY_NAME" ]]; then
             docker exec remote-chatgpt sh -lc 'ps -ef | grep -E "[X]vfb|[X]org" || true'
             docker logs --tail=200 remote-chatgpt || true
