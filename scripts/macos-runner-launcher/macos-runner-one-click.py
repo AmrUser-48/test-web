@@ -342,14 +342,20 @@ def main() -> int:
                 if greeting:
                     say(f"VNC verified: {ip}::5900 ({greeting})")
                     say("Opening TigerVNC with the locally saved password file; no per-connection prompt.")
-                    say("Close the VNC viewer or press Ctrl+C here to stop this workflow.")
+                    say("Closing or crashing TigerVNC will NOT stop the remote workflow.")
+                    say("Press Ctrl+C in this terminal only when you want to cancel the remote workflow.")
                     try:
                         completed = subprocess.run(
                             ["vncviewer", "-passwd", str(VNC_PASS_FILE), f"{ip}::5900"]
                         )
-                        return completed.returncode
-                    finally:
-                        cancel_run_if_active()
+                    except OSError as e:
+                        say(f"Could not start TigerVNC: {e}")
+                        say(f"The remote workflow remains active until its configured timeout. Run: {run_url}")
+                        return 1
+                    say(f"TigerVNC exited with status {completed.returncode}.")
+                    say(f"The remote workflow remains active until its configured timeout. Run: {run_url}")
+                    say(f"To reconnect, reopen TigerVNC at {ip}::5900 using {VNC_PASS_FILE}.")
+                    return completed.returncode
 
         try:
             info = run_status(RUN_ID)
