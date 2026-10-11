@@ -54,7 +54,19 @@ jobs:
           SET FCFLAGS -O2 -march=core2 -mtune=core2
           FLAGS
           mkdir -p "$HOME/.vnc"
-          printf '%s\n' "$VNC_PASSWORD" | vncpasswd -f > "$HOME/.vnc/passwd"
+          VNC_PASSWD="$(command -v vncpasswd || true)"
+          if [[ -z "$VNC_PASSWD" ]]; then
+            for candidate in /usr/bin/vncpasswd /usr/bin/tigervncpasswd /usr/lib/tigervnc/vncpasswd; do
+              if [[ -x "$candidate" ]]; then VNC_PASSWD="$candidate"; break; fi
+            done
+          fi
+          if [[ -z "$VNC_PASSWD" ]]; then
+            echo "::error::vncpasswd was not installed; checking TigerVNC packages."
+            dpkg -l 'tigervnc*' || true
+            dpkg -L tigervnc-tools 2>/dev/null || true
+            exit 1
+          fi
+          printf '%s\n' "$VNC_PASSWORD" | "$VNC_PASSWD" -f > "$HOME/.vnc/passwd"
           chmod 600 "$HOME/.vnc/passwd"
           unset VNC_PASSWORD
           cat > "$HOME/.vnc/xstartup" <<'XSTART'
