@@ -49,14 +49,14 @@ The VNC password file is obfuscated by TigerVNC, not strongly encrypted. Keep th
 
 ## Saved Ubuntu desktop state
 
-The Ubuntu workflow now saves these between sessions:
-- XFCE panel/theme preferences, including manual layout changes
+The Ubuntu workflow now saves the user's home directory and GitHub workspace between sessions, including:
+- XFCE panel/theme preferences and manual layout changes
 - Chrome profile, cookies, and browser state
-- Desktop, Documents, Downloads, GTK settings, and local application launchers
+- Files and project changes under the home/workspace directories
 
-Before starting the next session it restores an encrypted archive from GitHub Actions cache; if that cache is unavailable, it automatically downloads the latest retained encrypted backup artifact. At the end, it stores a new encrypted cache entry and uploads an encrypted backup artifact with 30-day retention, then removes older state artifacts so only the newest backup consumes artifact storage. The archive is encrypted with the existing `TAILSCALE_AUTHKEY` secret; the auth key must remain unchanged to decrypt an existing snapshot. The archive excludes common Chrome cache directories but preserves the profile itself.
+It excludes per-run SSH/VNC credential files, temporary GitHub workflow files, downloaded action code, trash, and disposable caches. Before starting the next session it restores an encrypted archive from GitHub Actions cache; if that cache is unavailable, it automatically downloads the latest retained encrypted backup artifact. At the end, it stores a new encrypted cache entry and uploads an encrypted backup artifact with 30-day retention, then removes older state artifacts so only the newest backup consumes artifact storage. The archive is encrypted with the existing `TAILSCALE_AUTHKEY` secret; the auth key must remain unchanged to decrypt an existing snapshot.
 
-The cache is convenient for session-to-session restoration but GitHub may evict caches after 7 days without access or due to its storage limit. The encrypted artifact is a time-limited backup, not permanent storage. Download files you cannot afford to lose separately before ending a session. The repository `xtr-dev/mcp-playwright-novnc` describes a persistent service, but its current Compose example does not mount a persistent volume; a container's browser/profile files do not survive removal unless a volume or backup mechanism is configured.
+GitHub may evict caches after 7 days without access or due to its storage limit, so the 30-day encrypted artifact is the fallback. This is not permanent storage: download separately anything that must survive beyond the artifact's retention period. The repository `xtr-dev/mcp-playwright-novnc` describes a persistent service, but its current Compose example does not mount a persistent volume; browser/profile files do not survive container removal unless a volume or backup mechanism is configured.
 
 ## Behaviour and timeouts
 
