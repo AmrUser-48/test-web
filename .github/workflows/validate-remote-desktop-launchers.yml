@@ -1,0 +1,67 @@
+name: Validate remote desktop launchers
+
+on:
+  push:
+    paths:
+      - "scripts/macos-runner-launcher/**"
+      - ".github/workflows/temporary-core2-build-runner-vnc.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate Python syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/macos-runner-launcher/macos-runner-one-click.py
+          rm -rf scripts/macos-runner-launcher/__pycache__
+
+      - name: Validate installer shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/macos-runner-launcher/install-desktop-launcher.sh
+
+      - name: Validate launcher and workflow contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          launcher = Path("scripts/macos-runner-launcher/macos-runner-one-click.py").read_text()
+          installer = Path("scripts/macos-runner-launcher/install-desktop-launcher.sh").read_text()
+          docs = Path("scripts/macos-runner-launcher/README.md").read_text()
+          workflow = Path(".github/workflows/temporary-core2-build-runner-vnc.yml").read_text()
+
+          required = {
+              "macOS workflow target": '"macos-chatgpt-vnc.yml"' in launcher,
+              "Ubuntu workflow target": '"temporary-core2-build-runner-vnc.yml"' in launcher,
+              "fresh unique runner hostname matching": '"github-core2"' in launcher and '"github-macos"' in launcher,
+              "saved VNC password file": '"-passwd", str(VNC_PASS_FILE)' in launcher,
+              "token saved with restrictive permissions": 'os.chmod(TOKEN_FILE, 0o600)' in launcher,
+              "both desktop icons": "Launch macOS ChatGPT Runner.desktop" in installer and "Launch Ubuntu Core2 VNC Runner.desktop" in installer,
+              "no automatic apt installs in installer": "apt-get install" not in installer and "apt install" not in installer,
+              "Arc-Dark theme": "Arc-Dark" in workflow,
+              "right-side vertical deskbar": "mode int 2" in workflow and "p=2;x=0;y=0" in workflow,
+              "encrypted desktop state": "openssl enc -aes-256-cbc -pbkdf2 -salt" in workflow,
+              "cache restoration": "actions/cache/restore@v4" in workflow,
+              "backup artifact fallback": "actions/download-artifact@v4" in workflow,
+              "state snapshot before service shutdown": workflow.index("Snapshot and encrypt desktop state") < workflow.index("Stop VNC and SSH services"),
+              "docs explain password persistence": "no VNC password prompt" in docs,
+          }
+          for name, passed in required.items():
+              print(("PASS" if passed else "FAIL") + ": " + name)
+          failures = [name for name, passed in required.items() if not passed]
+          if failures:
+              raise SystemExit(f"{len(failures)} validation check(s) failed")
+          PY
