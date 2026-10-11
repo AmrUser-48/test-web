@@ -1,4 +1,4 @@
-name: Temporary Core 2 build runner (SSH + VNC)
+name: Temporary Core 2 build runner (SSH + VNC over Tailscale)
 
 on:
   workflow_dispatch:
@@ -14,9 +14,16 @@ on:
           - "300"
           - "350"
         default: "60"
+  push:
+    paths:
+      - ".github/workflows/temporary-core2-build-runner-vnc.yml"
 
 permissions:
   contents: read
+
+concurrency:
+  group: temporary-core2-build-runner-vnc
+  cancel-in-progress: true
 
 jobs:
   shell-vnc:
@@ -27,32 +34,59 @@ jobs:
       CXXFLAGS: "-O2 -march=core2 -mtune=core2"
       FFLAGS: "-O2 -march=core2 -mtune=core2"
       FCFLAGS: "-O2 -march=core2 -mtune=core2"
-      SESSION_MINUTES: ${{ inputs.session_minutes }}
+      TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
       VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+      SESSION_MINUTES: ${{ inputs.session_minutes || '60' }}
+
     steps:
-      - name: Install build tools, lightweight desktop, VNC and noVNC
+      - name: Validate secrets
         shell: bash
         run: |
-          set -euxo pipefail
-          if [[ -z "$VNC_PASSWORD" || ${#VNC_PASSWORD} -lt 8 ]]; then
-            echo "::error::Add VNC_PASSWORD in Settings → Secrets and variables → Actions. Use at least 8 characters."
+          set -euo pipefail
+          if [[ -z "$TAILSCALE_AUTHKEY" ]]; then
+            echo "::error::Set repository secret TAILSCALE_AUTHKEY."
             exit 1
           fi
+          if [[ -z "$VNC_PASSWORD" || ${#VNC_PASSWORD} -lt 8 ]]; then
+            echo "::error::Set repository secret VNC_PASSWORD (at least 8 characters)."
+            exit 1
+          fi
+
+      - name: Connect runner to private Tailscale network
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: Install Core 2 build tools and private SSH/VNC services
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAILSCALE_IP="$(tailscale ip -4 | head -n 1)"
+          if [[ -z "$TAILSCALE_IP" ]]; then
+            echo "::error::Tailscale did not assign a private IP."
+            exit 1
+          fi
+          echo "TAILSCALE_IP=$TAILSCALE_IP" >> "$GITHUB_ENV"
+
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential gcc g++ make cmake ninja-build pkg-config \
             git ca-certificates curl wget xz-utils bzip2 unzip ccache \
             dpkg-dev devscripts debhelper fakeroot quilt autoconf automake \
             libtool gettext python3 python3-venv meson \
-            xfce4 xfce4-terminal dbus-x11 tigervnc-standalone-server tigervnc-tools novnc websockify
+            xfce4 xfce4-terminal dbus-x11 \
+            tigervnc-standalone-server tigervnc-tools socat openssh-server
+
           wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -O /tmp/google-chrome.deb
-          sudo apt-get install -y /tmp/google-chrome.deb
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y /tmp/google-chrome.deb
+
           sudo tee /etc/dpkg/buildflags.conf >/dev/null <<'FLAGS'
           SET CFLAGS -O2 -march=core2 -mtune=core2
           SET CXXFLAGS -O2 -march=core2 -mtune=core2
           SET FFLAGS -O2 -march=core2 -mtune=core2
           SET FCFLAGS -O2 -march=core2 -mtune=core2
           FLAGS
+
           mkdir -p "$HOME/.vnc"
           VNC_PASSWD="$(command -v vncpasswd || true)"
           if [[ -z "$VNC_PASSWD" ]]; then
@@ -61,14 +95,13 @@ jobs:
             done
           fi
           if [[ -z "$VNC_PASSWD" ]]; then
-            echo "::error::vncpasswd was not installed; checking TigerVNC packages."
+            echo "::error::TigerVNC vncpasswd was not installed."
             dpkg -l 'tigervnc*' || true
-            dpkg -L tigervnc-tools 2>/dev/null || true
             exit 1
           fi
           printf '%s\n' "$VNC_PASSWORD" | "$VNC_PASSWD" -f > "$HOME/.vnc/passwd"
           chmod 600 "$HOME/.vnc/passwd"
-          unset VNC_PASSWORD
+
           cat > "$HOME/.vnc/xstartup" <<'XSTART'
           #!/bin/sh
           unset SESSION_MANAGER
@@ -79,66 +112,129 @@ jobs:
           wait
           XSTART
           chmod +x "$HOME/.vnc/xstartup"
-          vncserver :1 -localhost yes -geometry 1440x900 -depth 24
-          nohup websockify --web=/usr/share/novnc/ 127.0.0.1:6080 localhost:5901 >/tmp/novnc.log 2>&1 &
-          echo "--- Runner ---"
-          cat /etc/os-release
-          uname -a
-          gcc --version | head -n 1
-          echo "--- Core 2 flags ---"
-          dpkg-buildflags --get CFLAGS
-          dpkg-buildflags --get CXXFLAGS
-          for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:6080/vnc.html >/dev/null; then break; fi
-            sleep 2
-          done
-          curl -fsS http://127.0.0.1:6080/vnc.html >/dev/null
-          echo "VNC desktop started on localhost:5901; noVNC web client on localhost:6080."
 
-      - name: Start HTTPS tunnel for noVNC
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o "$RUNNER_TEMP/cloudflared"
-          chmod +x "$RUNNER_TEMP/cloudflared"
-          nohup "$RUNNER_TEMP/cloudflared" tunnel --url http://127.0.0.1:6080 --no-autoupdate >"$RUNNER_TEMP/cloudflared-vnc.log" 2>&1 &
-          url=""
-          for _ in $(seq 1 60); do
-            url="$(grep -Eo 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "$RUNNER_TEMP/cloudflared-vnc.log" | head -n 1 || true)"
-            if [[ -n "$url" ]]; then break; fi
-            sleep 2
+          vncserver :1 -localhost yes -geometry 1440x900 -depth 24
+
+          # Relay VNC from loopback to the Tailscale IP only; never bind VNC to
+          # 0.0.0.0 or expose it via a public HTTPS tunnel.
+          nohup socat "TCP-LISTEN:5900,bind=$TAILSCALE_IP,reuseaddr,fork" TCP4:127.0.0.1:5901 \
+            >/tmp/socat-vnc.log 2>&1 </dev/null &
+
+          SSH_USER="$(id -un)"
+          KEY_BASE="$RUNNER_TEMP/core2-runner-ssh"
+          ssh-keygen -q -t ed25519 -N "" -C "GitHub Core2 runner $GITHUB_RUN_ID" -f "$KEY_BASE"
+          install -d -m 700 "$HOME/.ssh"
+          touch "$HOME/.ssh/authorized_keys"
+          cat "$KEY_BASE.pub" >> "$HOME/.ssh/authorized_keys"
+          chmod 600 "$HOME/.ssh/authorized_keys"
+
+          sudo tee /etc/ssh/sshd_config.d/90-tailscale-runner.conf >/dev/null <<EOF
+          ListenAddress $TAILSCALE_IP
+          PermitRootLogin no
+          PubkeyAuthentication yes
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          AllowUsers $SSH_USER
+          EOF
+          sudo /usr/sbin/sshd -t
+          sudo systemctl restart ssh
+
+          # Encrypt the private key with the existing VNC password so an artifact
+          # download alone does not grant SSH access.
+          ssh-keygen -p -P "" -N "$VNC_PASSWORD" -f "$KEY_BASE" >/dev/null
+          echo "SSH_USER=$SSH_USER" >> "$GITHUB_ENV"
+
+          ready=0
+          for _ in $(seq 1 30); do
+            if nc -z "$TAILSCALE_IP" 5900 && nc -z "$TAILSCALE_IP" 22; then
+              ready=1
+              break
+            fi
+            sleep 1
           done
-          if [[ -z "$url" ]]; then
-            cat "$RUNNER_TEMP/cloudflared-vnc.log" || true
-            echo "::error::Could not establish the noVNC HTTPS tunnel."
+          if [[ "$ready" != 1 ]]; then
+            echo "=== SSH listener ==="
+            sudo ss -lntp || true
+            echo "=== VNC relay ==="
+            cat /tmp/socat-vnc.log || true
+            echo "=== TigerVNC log ==="
+            cat "$HOME"/.vnc/*.log || true
+            echo "::error::VNC or SSH did not start on the Tailscale IP."
             exit 1
           fi
+
+          # Confirm VNC speaks RFB and offers password authentication.
+          python3 - "$TAILSCALE_IP" <<'PY'
+          import socket, sys, time
+          host = sys.argv[1]
+          deadline = time.monotonic() + 30
+          last_error = None
+          while time.monotonic() < deadline:
+              try:
+                  with socket.create_connection((host, 5900), timeout=3) as sock:
+                      sock.settimeout(3)
+                      greeting = b""
+                      while len(greeting) < 12:
+                          chunk = sock.recv(12 - len(greeting))
+                          if not chunk:
+                              raise RuntimeError("connection closed before RFB greeting")
+                          greeting += chunk
+                      if not greeting.startswith(b"RFB "):
+                          raise RuntimeError(f"unexpected greeting: {greeting!r}")
+                      sock.sendall(b"RFB 003.008\\n")
+                      count = sock.recv(1)
+                      if not count:
+                          raise RuntimeError("VNC closed before security negotiation")
+                      n = count[0]
+                      types = b""
+                      while len(types) < n:
+                          part = sock.recv(n - len(types))
+                          if not part:
+                              raise RuntimeError("VNC closed during security negotiation")
+                          types += part
+                      if 2 not in types:
+                          raise RuntimeError(f"VNC did not offer VNC password auth: {list(types)}")
+                      print(f"PASS: VNC RFB greeting and password-auth offer on {host}:5900")
+                      break
+              except Exception as exc:
+                  last_error = exc
+                  time.sleep(1)
+          else:
+              raise RuntimeError(f"VNC handshake did not become ready: {last_error}")
+          PY
+
+          ssh-keyscan -T 3 -p 22 "$TAILSCALE_IP" > "$RUNNER_TEMP/known-hosts" 2>/dev/null
+          test -s "$RUNNER_TEMP/known-hosts"
+
           {
-            echo "## Temporary Core 2 build runner — SSH + VNC"
+            echo "## Temporary Core 2 build runner — Tailscale SSH + VNC"
             echo
-            echo "VNC browser URL: ${url}/vnc.html?autoconnect=true&resize=remote&path=websockify"
-            echo
-            echo "At the noVNC page, connect to the desktop and enter the VNC password stored as repository secret VNC_PASSWORD."
-            echo "SSH remains available through the separate Upterm step."
-            echo "Session duration: ${SESSION_MINUTES} minutes. Cancel this workflow to stop both services."
-            echo
-            echo "The VNC server listens on localhost only; the public tunnel reaches the noVNC web client, and the VNC server still requires its password."
+            echo "- Tailscale IP: `$TAILSCALE_IP`"
+            echo "- VNC: `$TAILSCALE_IP::5900` (password: repository secret `VNC_PASSWORD`)"
+            echo "- SSH: `ssh -i core2-runner-ssh $SSH_USER@$TAILSCALE_IP`"
+            echo "- Download artifact: `core2-runner-tailscale-ssh-key-${GITHUB_RUN_ID}`"
+            echo "- SSH key passphrase: the same `VNC_PASSWORD` secret."
+            echo "- SSH and VNC listen only on the runner's Tailscale address. No Cloudflare tunnel or Upterm is used."
+            echo "- Session duration: $SESSION_MINUTES minutes. Cancel this workflow to stop the runner."
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "noVNC HTTPS URL: ${url}/vnc.html?autoconnect=true&resize=remote&path=websockify"
-          echo "Local noVNC health check already passed; skipping external DNS probe to avoid failing on tunnel DNS propagation."
+          echo "PASS: private VNC and SSH endpoints are listening on $TAILSCALE_IP."
 
-      - name: Open temporary SSH shell
-        uses: owenthereal/action-upterm@v2
+      - name: Upload encrypted SSH private key
+        uses: actions/upload-artifact@v4
         with:
-          limit-access-to-actor: true
-          wait-timeout-minutes: 360
+          name: core2-runner-tailscale-ssh-key-${{ github.run_id }}
+          path: ${{ runner.temp }}/core2-runner-ssh
+          if-no-files-found: error
+          retention-days: 1
 
-      - name: Keep desktop session alive
-        if: always()
+      - name: Keep SSH and VNC available
         shell: bash
         run: sleep "$((SESSION_MINUTES * 60))"
 
-      - name: Stop VNC desktop
+      - name: Stop VNC and SSH services
         if: always()
         shell: bash
-        run: vncserver -kill :1 >/dev/null 2>&1 || true
+        run: |
+          vncserver -kill :1 >/dev/null 2>&1 || true
+          sudo systemctl stop ssh >/dev/null 2>&1 || true
+          pkill -f 'socat TCP-LISTEN:5900' >/dev/null 2>&1 || true
