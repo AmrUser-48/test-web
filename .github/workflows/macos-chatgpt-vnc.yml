@@ -1,0 +1,168 @@
+name: Temporary macOS ChatGPT VNC (M1)
+
+on:
+  workflow_dispatch:
+    inputs:
+      session_minutes:
+        description: How long to keep the macOS desktop online
+        required: true
+        type: choice
+        options:
+          - "15"
+          - "30"
+          - "60"
+        default: "30"
+  push:
+    paths:
+      - ".github/workflows/macos-chatgpt-vnc.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  macos-vnc:
+    name: Start temporary macOS M1 desktop
+    runs-on: macos-15
+    timeout-minutes: 65
+    env:
+      TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+      VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+      SESSION_MINUTES: ${{ inputs.session_minutes || '30' }}
+
+    steps:
+      - name: Validate secrets
+        shell: bash
+        run: |
+          if [[ -z "$TAILSCALE_AUTHKEY" ]]; then
+            echo "::error::Missing TAILSCALE_AUTHKEY repository secret."
+            exit 1
+          fi
+          if [[ -z "$VNC_PASSWORD" || ${#VNC_PASSWORD} -lt 8 ]]; then
+            echo "::error::Missing VNC_PASSWORD repository secret (minimum 8 characters)."
+            exit 1
+          fi
+
+      - name: Connect macOS runner to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: Report hardware and launch Chrome at ChatGPT
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== macOS runner ==="
+          sw_vers
+          uname -a
+          echo "=== Hardware ==="
+          system_profiler SPHardwareDataType | grep -E 'Model Name|Model Identifier|Chip|Total Number of Cores|Memory'
+          echo "=== Graphics ==="
+          system_profiler SPDisplaysDataType | grep -E 'Chipset Model|Type|Bus|Total Number of Cores|Metal|Displays' || true
+
+          if [[ ! -d "/Applications/Google Chrome.app" ]]; then
+            echo "::error::Google Chrome is not installed on this macOS image."
+            exit 1
+          fi
+
+          PROFILE_DIR="$RUNNER_TEMP/chatgpt-chrome-profile"
+          mkdir -p "$PROFILE_DIR"
+          open -a "Google Chrome" --args \
+            --user-data-dir="$PROFILE_DIR" \
+            --no-first-run \
+            --no-default-browser-check \
+            --remote-debugging-port=9222 \
+            https://chatgpt.com
+
+          ready=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:9222/json/version >/tmp/chrome-version.json; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$ready" != 1 ]]; then
+            echo "::error::Chrome remote debugging endpoint did not start."
+            ps aux | grep -i '[G]oogle Chrome' || true
+            exit 1
+          fi
+          echo "Chrome launched; browser endpoint responds."
+          cat /tmp/chrome-version.json
+
+      - name: Enable macOS Screen Sharing (VNC)
+        shell: bash
+        run: |
+          set -euo pipefail
+          KICKSTART="/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart"
+          if [[ ! -x "$KICKSTART" ]]; then
+            echo "::error::Apple Remote Desktop kickstart is unavailable on this macOS image."
+            ls -ld /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources 2>/dev/null || true
+            exit 1
+          fi
+
+          # VNC legacy authentication supports only the first eight password characters.
+          VNC_PASS_SHORT="${VNC_PASSWORD:0:8}"
+          sudo "$KICKSTART" \
+            -activate \
+            -configure -access -on \
+            -configure -allowAccessFor -allUsers \
+            -configure -privs -all \
+            -configure -clientopts -setvnclegacy -vnclegacy yes -setvncpw -vncpw "$VNC_PASS_SHORT" \
+            -restart -agent
+
+          sudo launchctl enable system/com.apple.screensharing || true
+          sudo launchctl kickstart -k system/com.apple.screensharing || true
+          sleep 3
+
+          TAILSCALE_IP="$(tailscale ip -4 | head -n 1)"
+          if [[ -z "$TAILSCALE_IP" ]]; then
+            echo "::error::Tailscale did not assign a private IP."
+            exit 1
+          fi
+          echo "TAILSCALE_IP=$TAILSCALE_IP" >> "$GITHUB_ENV"
+
+          echo "=== Port 5900 listener ==="
+          lsof -nP -iTCP:5900 -sTCP:LISTEN || true
+
+          ready=0
+          for _ in $(seq 1 20); do
+            if nc -z 127.0.0.1 5900; then ready=1; break; fi
+            sleep 1
+          done
+          if [[ "$ready" != 1 ]]; then
+            sudo "$KICKSTART" -agent -settings || true
+            sudo launchctl print system/com.apple.screensharing || true
+            echo "::error::macOS Screen Sharing did not listen on TCP port 5900."
+            exit 1
+          fi
+
+          # Prove the VNC handshake works locally before publishing the address.
+          printf 'RFB probe: '
+          timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/5900; head -c 12 <&3' || true
+
+          {
+            echo "## macOS M1 ChatGPT desktop"
+            echo
+            echo "- Runner: macOS 15 / Apple Silicon"
+            echo "- Tailscale IP: `$TAILSCALE_IP`"
+            echo "- VNC address for TigerVNC: `$TAILSCALE_IP::5900`"
+            echo "- VNC password: first 8 characters of the existing `VNC_PASSWORD` secret"
+            echo "- Session duration: $SESSION_MINUTES minutes"
+            echo
+            echo "The VNC port is intended for private Tailscale access only. Do not expose it through a public tunnel."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "PASS: local VNC port is listening. Connect from Debian to $TAILSCALE_IP::5900."
+
+      - name: Keep macOS desktop alive
+        shell: bash
+        run: sleep "$((SESSION_MINUTES * 60))"
+
+      - name: Disable Screen Sharing
+        if: always()
+        shell: bash
+        run: |
+          KICKSTART="/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart"
+          if [[ -x "$KICKSTART" ]]; then
+            sudo "$KICKSTART" -deactivate -configure -access -off || true
+          fi
