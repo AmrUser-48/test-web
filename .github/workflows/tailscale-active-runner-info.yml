@@ -1,0 +1,59 @@
+name: Find active macOS runner on Tailscale
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/tailscale-active-runner-info.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-tailnet:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Connect diagnostic runner to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: Find online macOS peers and test VNC/SSH ports
+        shell: bash
+        run: |
+          set -euo pipefail
+          tailscale status --json > "$RUNNER_TEMP/tailscale-status.json"
+          python3 - "$RUNNER_TEMP/tailscale-status.json" <<'PY'
+          import json
+          import socket
+          import sys
+
+          data = json.load(open(sys.argv[1], encoding="utf-8"))
+          peers = data.get("Peer") or {}
+          matches = []
+          for peer in peers.values():
+              hostinfo = peer.get("Hostinfo") or {}
+              os_name = str(hostinfo.get("OS", ""))
+              online = peer.get("Online") is True
+              if os_name.lower() != "macos" or not online:
+                  continue
+              ips = peer.get("TailscaleIPs") or []
+              ip4 = next((ip for ip in ips if "." in ip), None)
+              if not ip4:
+                  continue
+              matches.append((ip4, peer.get("HostName", "unknown"), peer.get("DNSName", "")))
+
+          if not matches:
+              print("No online macOS peers are currently visible in this tailnet.")
+              sys.exit(0)
+
+          for ip, hostname, dnsname in matches:
+              print(f"macOS runner: {hostname}; Tailscale IPv4: {ip}; DNS: {dnsname}")
+              for port, label in ((5900, "VNC"), (22, "SSH")):
+                  try:
+                      with socket.create_connection((ip, port), timeout=2):
+                          print(f"  {label} port {port}: OPEN")
+                  except OSError as exc:
+                      print(f"  {label} port {port}: not reachable ({exc.__class__.__name__})")
+          PY
