@@ -7,7 +7,7 @@ Minimal terminal-style single-page starter. Vanilla HTML/CSS/JS; no framework, b
 The workflow runs Chromium at ChatGPT and exposes a native VNC connection only on the runner's private Tailscale IP. It does not use Pinggy or Cloudflare.
 
 1. Create a Tailscale account and sign in on your laptop.
-2. In [Tailscale key settings](https://login.tailscale.com/admin/settings/keys), create a reusable, ephemeral auth key. Add it to [this repository's Actions secrets](https://github.com/AmrUser-48/test-web/settings/secrets/actions/new) as `TAILSCALE_AUTHKEY`. Do not paste the key into chat or commit it.
+2. In Tailscale **Access Controls**, create the tag `tag:ci` if it does not exist yet. In [Tailscale key settings](https://login.tailscale.com/admin/settings/keys), create an auth key marked **reusable** and **ephemeral**, tagged `tag:ci` (and pre-approved if device approval is enabled). Add it to [this repository's Actions secrets](https://github.com/AmrUser-48/test-web/settings/secrets/actions/new) as `TAILSCALE_AUTHKEY`. Do not paste the key into chat or commit it.
 3. Because the Debian disk is full, use Tailscale's official static binaries in RAM (`/dev/shm`) instead of installing the 77 MB package:
 
    ```sh
