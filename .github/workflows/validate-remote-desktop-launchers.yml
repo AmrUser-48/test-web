@@ -62,7 +62,7 @@ jobs:
               "backup artifact fallback": "actions/download-artifact@v4" in workflow,
               "state snapshot before service shutdown": workflow.index("Snapshot and encrypt desktop state") < workflow.index("Stop VNC and SSH services"),
               "docs explain password persistence": "no VNC password prompt" in docs,
-              "macOS workflow is manual-only": "\\n  push:\\n" not in macos_workflow,
+              "macOS workflow is manual-only": "push:" not in macos_workflow,
               "macOS workflow fails fast if VNC is unavailable": 'echo "::error::Native macOS VNC is unavailable:' in macos_workflow and "No RFB greeting was received" in macos_workflow and "FAILURE: macOS VNC did not start" in macos_workflow,
           }
           for name, passed in required.items():
