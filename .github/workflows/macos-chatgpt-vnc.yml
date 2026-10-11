@@ -19,6 +19,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: macos-chatgpt-vnc
+  cancel-in-progress: true
+
 jobs:
   macos-vnc:
     name: Start temporary macOS M1 desktop
@@ -54,10 +58,27 @@ jobs:
           echo "=== macOS runner ==="
           sw_vers
           uname -a
-          echo "=== Hardware ==="
-          system_profiler SPHardwareDataType | grep -E 'Model Name|Model Identifier|Chip|Total Number of Cores|Memory'
-          echo "=== Graphics ==="
-          system_profiler SPDisplaysDataType | grep -E 'Chipset Model|Type|Bus|Total Number of Cores|Metal|Displays' || true
+          echo "=== Hardware (bounded diagnostic) ==="
+          python3 - <<'PY'
+          import subprocess
+          for data_type in ("SPHardwareDataType", "SPDisplaysDataType"):
+              print("--- " + data_type + " ---", flush=True)
+              try:
+                  p = subprocess.run(
+                      ["system_profiler", data_type],
+                      capture_output=True, text=True, timeout=12
+                  )
+                  for line in p.stdout.splitlines():
+                      if any(k in line for k in (
+                          "Model Name", "Model Identifier", "Chip:", "Chipset Model",
+                          "Total Number of Cores", "Memory:", "Metal"
+                      )):
+                          print(line, flush=True)
+                  if p.returncode:
+                      print("system_profiler exit:", p.returncode, flush=True)
+              except subprocess.TimeoutExpired:
+                  print("system_profiler timed out; continuing.", flush=True)
+          PY
 
           if [[ ! -d "/Applications/Google Chrome.app" ]]; then
             echo "::error::Google Chrome is not installed on this macOS image."
@@ -66,12 +87,12 @@ jobs:
 
           PROFILE_DIR="$RUNNER_TEMP/chatgpt-chrome-profile"
           mkdir -p "$PROFILE_DIR"
-          open -a "Google Chrome" --args \
+          nohup open -a "Google Chrome" --args \
             --user-data-dir="$PROFILE_DIR" \
             --no-first-run \
             --no-default-browser-check \
             --remote-debugging-port=9222 \
-            https://chatgpt.com
+            https://chatgpt.com >/tmp/chrome-open.log 2>&1 </dev/null &
 
           ready=0
           for _ in $(seq 1 30); do
@@ -83,6 +104,7 @@ jobs:
           done
           if [[ "$ready" != 1 ]]; then
             echo "::error::Chrome remote debugging endpoint did not start."
+            cat /tmp/chrome-open.log || true
             ps aux | grep -i '[G]oogle Chrome' || true
             exit 1
           fi
