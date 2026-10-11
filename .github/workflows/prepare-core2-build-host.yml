@@ -1,4 +1,4 @@
-name: Prepare Debian 12 Core 2 build host
+name: Temporary Core 2 build runner (SSH)
 
 on:
   workflow_dispatch:
@@ -6,106 +6,41 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: prepare-core2-build-host
-  cancel-in-progress: false
-
 jobs:
-  prepare:
+  shell:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 360
+    env:
+      CFLAGS: "-O2 -march=core2 -mtune=core2"
+      CXXFLAGS: "-O2 -march=core2 -mtune=core2"
+      FFLAGS: "-O2 -march=core2 -mtune=core2"
+      FCFLAGS: "-O2 -march=core2 -mtune=core2"
     steps:
-      - name: Install SSH client
+      - name: Install build tools and Core 2 build flags
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends openssh-client
-
-      - name: Configure SSH
-        env:
-          REMOTE_HOST: ${{ secrets.REMOTE_HOST }}
-          REMOTE_PORT: ${{ secrets.REMOTE_PORT }}
-          REMOTE_USER: ${{ secrets.REMOTE_USER }}
-          REMOTE_SSH_KEY: ${{ secrets.REMOTE_SSH_KEY }}
-          REMOTE_KNOWN_HOSTS: ${{ secrets.REMOTE_KNOWN_HOSTS }}
-        run: |
-          set -eu
-          for name in REMOTE_HOST REMOTE_USER REMOTE_SSH_KEY REMOTE_KNOWN_HOSTS; do
-            if [ -z "${!name:-}" ]; then
-              echo "::error::Missing Actions secret: $name"
-              exit 1
-            fi
-          done
-          install -d -m 700 ~/.ssh
-          printf '%s\n' "$REMOTE_SSH_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          printf '%s\n' "$REMOTE_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-          port="${REMOTE_PORT:-22}"
-          printf 'host build-host\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_ed25519\n  IdentitiesOnly yes\n  StrictHostKeyChecking yes\n  BatchMode yes\n' "$REMOTE_HOST" "$REMOTE_USER" "$port" > ~/.ssh/config
-          chmod 600 ~/.ssh/config
-
-      - name: Prepare Debian 12 build environment
-        run: |
-          set -eu
-          ssh build-host 'bash -s' <<'REMOTE_SCRIPT'
-          set -eu
-
-          if ! grep -qE '^ID=debian$' /etc/os-release || ! grep -qE '^VERSION_ID="?12"?$' /etc/os-release; then
-            echo "Refusing to configure host: expected Debian 12." >&2
-            cat /etc/os-release
-            exit 1
-          fi
-
-          if ! command -v sudo >/dev/null 2>&1; then
-            echo "The SSH user must have sudo installed and permission to run apt-get." >&2
-            exit 1
-          fi
-          sudo -n true || {
-            echo "The SSH user needs passwordless sudo for this workflow." >&2
-            exit 1
-          }
-
+          set -eux
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential gcc g++ make cmake ninja-build pkg-config \
-            git ca-certificates curl wget xz-utils bzip2 unzip \
-            ccache dpkg-dev devscripts debhelper fakeroot quilt \
-            autoconf automake libtool gettext python3 python3-venv \
-            meson
-          
-          # Core 2 Duo T7250 target tuning. These are compiler target flags;
-          # they do not change the host CPU or make binaries portable to newer CPUs only.
-          sudo install -d -m 755 /etc/profile.d
-          sudo tee /etc/profile.d/core2-build-flags.sh >/dev/null <<'FLAGS'
-          export CFLAGS="-O2 -march=core2 -mtune=core2"
-          export CXXFLAGS="-O2 -march=core2 -mtune=core2"
-          export FFLAGS="-O2 -march=core2 -mtune=core2"
-          export FCFLAGS="-O2 -march=core2 -mtune=core2"
-          export GOAMD64=v1
-          FLAGS
-          sudo chmod 644 /etc/profile.d/core2-build-flags.sh
-
-          # Apply flags to dpkg-buildflags-based Debian package builds too.
-          sudo install -d -m 755 /etc/dpkg
-          sudo tee /etc/dpkg/buildflags.conf >/dev/null <<'DPKGFLAGS'
+            git ca-certificates curl wget xz-utils bzip2 unzip ccache \
+            dpkg-dev devscripts debhelper fakeroot quilt autoconf automake \
+            libtool gettext python3 python3-venv meson
+          sudo tee /etc/dpkg/buildflags.conf >/dev/null <<'FLAGS'
           SET CFLAGS -O2 -march=core2 -mtune=core2
           SET CXXFLAGS -O2 -march=core2 -mtune=core2
           SET FFLAGS -O2 -march=core2 -mtune=core2
           SET FCFLAGS -O2 -march=core2 -mtune=core2
-          DPKGFLAGS
-
-          echo '--- Host ---'
-          . /etc/os-release
-          printf '%s %s\n' "$PRETTY_NAME" "$(uname -m)"
+          FLAGS
+          echo "--- Runner ---"
+          cat /etc/os-release
+          uname -a
           gcc --version | head -n 1
-          echo '--- Effective Debian build flags ---'
+          echo "--- Core 2 flags ---"
+          printf 'CFLAGS=%s\nCXXFLAGS=%s\n' "$CFLAGS" "$CXXFLAGS"
           dpkg-buildflags --get CFLAGS
           dpkg-buildflags --get CXXFLAGS
-          echo '--- CPU ---'
-          lscpu | grep -E '^(Architecture|CPU\(s\)|Model name):' || true
-          echo 'Build environment prepared. Log out and back in for /etc/profile.d flags in interactive shells.'
-          REMOTE_SCRIPT
 
-      - name: Remove SSH key
-        if: always()
-        run: rm -f ~/.ssh/id_ed25519 ~/.ssh/config ~/.ssh/known_hosts
+      - name: Open temporary SSH shell
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
