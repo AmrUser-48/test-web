@@ -45,6 +45,8 @@ jobs:
             dpkg-dev devscripts debhelper fakeroot quilt autoconf automake \
             libtool gettext python3 python3-venv meson \
             xfce4 xfce4-terminal dbus-x11 tigervnc-standalone-server novnc websockify
+          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -O /tmp/google-chrome.deb
+          sudo apt-get install -y /tmp/google-chrome.deb
           sudo tee /etc/dpkg/buildflags.conf >/dev/null <<'FLAGS'
           SET CFLAGS -O2 -march=core2 -mtune=core2
           SET CXXFLAGS -O2 -march=core2 -mtune=core2
@@ -59,7 +61,10 @@ jobs:
           #!/bin/sh
           unset SESSION_MANAGER
           unset DBUS_SESSION_BUS_ADDRESS
-          exec dbus-launch --exit-with-session startxfce4
+          dbus-launch --exit-with-session startxfce4 &
+          sleep 3
+          google-chrome-stable --no-first-run --no-default-browser-check https://chatgpt.com >/tmp/chromium.log 2>&1 &
+          wait
           XSTART
           chmod +x "$HOME/.vnc/xstartup"
           vncserver :1 -localhost yes -geometry 1440x900 -depth 24
