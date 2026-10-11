@@ -332,7 +332,8 @@ def main() -> int:
             raise
         time.sleep(POLL_SECONDS)
 
-    die(f"Timed out after {WAIT_SECONDS}s waiting for this run's VNC. No stale peer was used. Run: {run_url}")
+    cancel_run_if_active()
+    die(f"Timed out after {WAIT_SECONDS}s waiting for this run's VNC. No stale peer was used. The workflow was cancelled to avoid wasting runner time. Run: {run_url}")
 
 
 if __name__ == "__main__":
