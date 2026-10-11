@@ -30,20 +30,20 @@ jobs:
           import sys
 
           data = json.load(open(sys.argv[1], encoding="utf-8"))
-peers = data.get("Peer") or {}
-if not peers:
-    print("No peers visible in the Tailscale status response.")
-for peer in peers.values():
-    hostinfo = peer.get("Hostinfo") or {}
-    os_name = str(hostinfo.get("OS", peer.get("OS", "unknown"))).strip()
-    online = peer.get("Online") is True
-    ips = peer.get("TailscaleIPs") or []
-    ip4 = next((ip for ip in ips if "." in ip), None)
-    print(f"peer host={peer.get('HostName', 'unknown')} os={os_name!r} online={online} ips={ips}")
-    if not online or not ip4:
-        continue
-    for port, label in ((5900, "VNC"), (22, "SSH")):
-        try:
+          peers = data.get("Peer") or {}
+          if not peers:
+          print("No peers visible in the Tailscale status response.")
+          for peer in peers.values():
+          hostinfo = peer.get("Hostinfo") or {}
+          os_name = str(hostinfo.get("OS", peer.get("OS", "unknown"))).strip()
+          online = peer.get("Online") is True
+          ips = peer.get("TailscaleIPs") or []
+          ip4 = next((ip for ip in ips if "." in ip), None)
+          print(f"peer host={peer.get('HostName', 'unknown')} os={os_name!r} online={online} ips={ips}")
+          if not online or not ip4:
+          continue
+          for port, label in ((5900, "VNC"), (22, "SSH")):
+          try:
             with socket.create_connection((ip4, port), timeout=2):
                 print(f"  {label} port {port}: OPEN")
                 if port == 5900:
@@ -55,6 +55,6 @@ for peer in peers.values():
                         greeting.close()
                     except OSError as exc:
                         print(f"  VNC greeting test failed: {exc.__class__.__name__}")
-        except OSError as exc:
+          except OSError as exc:
             print(f"  {label} port {port}: not reachable ({exc.__class__.__name__})")
           PY
