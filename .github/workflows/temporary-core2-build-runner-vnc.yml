@@ -1,6 +1,10 @@
 name: Temporary Core 2 build runner (SSH + VNC over Tailscale)
 
 on:
+  # Temporary recovery trigger: start one run with the fixed restore step, then remove.
+  push:
+    paths:
+      - ".github/workflows/temporary-core2-build-runner-vnc.yml"
   workflow_dispatch:
     inputs:
       session_minutes:
