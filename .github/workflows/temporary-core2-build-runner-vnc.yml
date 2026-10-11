@@ -119,6 +119,7 @@ jobs:
           # 0.0.0.0 or expose it via a public HTTPS tunnel.
           nohup socat "TCP-LISTEN:5900,bind=$TAILSCALE_IP,reuseaddr,fork" TCP4:127.0.0.1:5901 \
             >/tmp/socat-vnc.log 2>&1 </dev/null &
+          echo "$!" > /tmp/socat-vnc.pid
 
           SSH_USER="$(id -un)"
           KEY_BASE="$RUNNER_TEMP/core2-runner-ssh"
@@ -136,6 +137,7 @@ jobs:
           KbdInteractiveAuthentication no
           AllowUsers $SSH_USER
           EOF
+          sudo install -d -m 0755 /run/sshd
           sudo /usr/sbin/sshd -t
           sudo systemctl restart ssh
 
@@ -237,4 +239,4 @@ jobs:
         run: |
           vncserver -kill :1 >/dev/null 2>&1 || true
           sudo systemctl stop ssh >/dev/null 2>&1 || true
-          pkill -f 'socat TCP-LISTEN:5900' >/dev/null 2>&1 || true
+          if [[ -f /tmp/socat-vnc.pid ]]; then kill "$(cat /tmp/socat-vnc.pid)" >/dev/null 2>&1 || true; fi
