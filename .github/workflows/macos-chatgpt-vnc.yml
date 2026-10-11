@@ -149,27 +149,32 @@ jobs:
             if [[ "$reply" == RFB* ]]; then ready=1; break; fi
             sleep 1
           done
-          if [[ "$ready" != 1 ]]; then
-            sudo "$KICKSTART" -agent -settings || true
+          if [[ "$ready" == "1" ]]; then
+            echo "MACOS_VNC_READY=1" >> "$GITHUB_ENV"
+            echo "PASS: Screen Sharing sent RFB greeting: $reply"
+          else
+            echo "MACOS_VNC_READY=0" >> "$GITHUB_ENV"
+            echo "::warning::This hosted macOS VM has no active Screen Sharing listener; continuing with SSH over Tailscale."
             sudo launchctl print system/com.apple.screensharing || true
-            echo "::error::macOS Screen Sharing did not complete the RFB greeting on TCP port 5900."
-            exit 1
           fi
-          echo "PASS: Screen Sharing sent RFB greeting: $reply"
 
           {
-            echo "## macOS M1 ChatGPT desktop"
+            echo "## macOS runner — private Tailscale access"
             echo
             echo "- Runner: macOS 15 / Apple Silicon"
             echo "- Tailscale IP: `$TAILSCALE_IP`"
-            echo "- VNC address for TigerVNC: `$TAILSCALE_IP::5900`"
-            echo "- VNC password: first 8 characters of the existing `VNC_PASSWORD` secret"
+            if [[ "$ready" == "1" ]]; then
+              echo "- VNC address for TigerVNC: `$TAILSCALE_IP::5900`"
+              echo "- VNC password: first 8 characters of the existing `VNC_PASSWORD` secret"
+            else
+              echo "- Native macOS VNC: unavailable on this headless runner (no active WindowServer/Screen Sharing listener)."
+              echo "- Use the SSH endpoint provided by the next step."
+            fi
             echo "- Session duration: $SESSION_MINUTES minutes"
             echo
-            echo "The VNC port is intended for private Tailscale access only. Do not expose it through a public tunnel."
+            echo "The services are intended for private Tailscale access only. Do not expose them through a public tunnel."
           } >> "$GITHUB_STEP_SUMMARY"
 
-          echo "PASS: local VNC port is listening. Connect from Debian to $TAILSCALE_IP::5900."
 
       - name: Enable SSH on the private Tailscale address
         shell: bash
