@@ -1,6 +1,10 @@
 name: Temporary Core 2 build runner (SSH + VNC over Tailscale)
 
 on:
+  # Temporary trigger for one recovery run; removed immediately after dispatch.
+  push:
+    paths:
+      - ".github/workflows/temporary-core2-build-runner-vnc.yml"
   workflow_dispatch:
     inputs:
       session_minutes:
@@ -156,15 +160,25 @@ jobs:
             echo "Encrypted desktop-state archive: $(du -h "$archive" | cut -f1)"
             echo "Free space before restore:"
             df -h "$HOME" /tmp
-            if timeout --foreground --signal=TERM --kill-after=10s 240s bash -o pipefail -c '
+            echo "Extracting desktop state (hard limit: 240 seconds)..."
+            # Do NOT use timeout --foreground here. It signals only the direct
+            # shell and can leave tar/openssl running with the pipe held open.
+            if timeout --signal=TERM --kill-after=10s 240s bash -o pipefail -c '
               openssl enc -d -aes-256-cbc -pbkdf2 -salt \
                 -pass env:TAILSCALE_AUTHKEY -in "$1" |
                 tar -xzf - -C "$2"
             ' _ "$archive" "$restore_dir"; then
-              echo "Archive extracted; restoring files into the runner home directory."
-              cp -a "$restore_dir/." "$HOME/"
-              echo "DESKTOP_STATE_RESTORED=1" >> "$GITHUB_ENV"
-              echo "Restored encrypted XFCE settings, Chrome profile, Desktop, Documents, Downloads, and workspace files."
+              echo "Archive extraction finished. Staged size:"
+              du -sh "$restore_dir" || true
+              echo "Restoring files into runner home (hard limit: 180 seconds)..."
+              if timeout --signal=TERM --kill-after=10s 180s cp -a "$restore_dir/." "$HOME/"; then
+                echo "DESKTOP_STATE_RESTORED=1" >> "$GITHUB_ENV"
+                echo "Restored encrypted XFCE settings, Chrome profile, Desktop, Documents, Downloads, and workspace files."
+              else
+                rc=$?
+                echo "::warning::Copying desktop state into HOME failed or exceeded 180 seconds (exit $rc). Continuing with a fresh desktop configuration."
+                echo "DESKTOP_STATE_RESTORED=0" >> "$GITHUB_ENV"
+              fi
             else
               rc=$?
               echo "::warning::Could not extract/decrypt desktop-state archive (exit $rc or 240-second timeout); starting with a fresh desktop."
