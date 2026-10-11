@@ -6,7 +6,7 @@ Minimal terminal-style single-page starter. Vanilla HTML/CSS/JS; no framework, b
 
 A manually triggered GitHub Actions workflow starts a disposable Chromium container configured to open ChatGPT and exposes the desktop **only on the runner's private Tailscale address**. It no longer uses Cloudflare or Pinggy.
 
-1. In Tailscale, create an **ephemeral, reusable auth key**. If device approval is enabled, pre-approve the key.
+1. In Tailscale **Access Controls**, define the tag `tag:ci` (if it does not already exist), then create an **ephemeral, reusable auth key tagged `tag:ci`**. If device approval is enabled, pre-approve the key. Your tailnet policy must allow your Debian device to reach `tag:ci` on TCP port `3000`.
 2. Add that key to this repository's Actions secrets as `TAILSCALE_AUTHKEY`. Also add `BROWSER_ACCESS_PASSWORD` with a unique password of at least 20 characters, using only ASCII letters, digits, dot, underscore, and hyphen: [Repository secrets](https://github.com/AmrUser-48/test-web/settings/secrets/actions/new).
 3. Install the official Tailscale package on Debian 12 and sign in to the **same Tailscale network** as your account.
 4. Run [Temporary remote ChatGPT Chromium](https://github.com/AmrUser-48/test-web/actions/workflows/remote-chatgpt-browser.yml) and select a duration.
