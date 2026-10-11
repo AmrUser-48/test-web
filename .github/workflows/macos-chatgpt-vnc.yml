@@ -192,9 +192,9 @@ jobs:
           chmod 600 "$HOME/.ssh/authorized_keys"
           cat "$KEY_BASE.pub" >> "$HOME/.ssh/authorized_keys"
 
-          sudo systemsetup -setremotelogin off >/dev/null 2>&1 || true
-          sudo launchctl disable system/com.openssh.sshd >/dev/null 2>&1 || true
-          sudo launchctl bootout system /System/Library/LaunchDaemons/ssh.plist >/dev/null 2>&1 || true
+          # The service is bound to the private Tailscale IP only; avoid
+          # systemsetup/launchctl operations that can stall in headless hosted VMs.
+          sudo install -d -m 0755 /var/empty
           sudo /usr/sbin/sshd -t
           sudo nohup /usr/sbin/sshd -D \
             -o "ListenAddress=$TAILSCALE_IP" \
@@ -207,7 +207,7 @@ jobs:
 
           ready=0
           for _ in $(seq 1 20); do
-            if nc -z "$TAILSCALE_IP" 22; then ready=1; break; fi
+            if nc -z -w 2 "$TAILSCALE_IP" 22; then ready=1; break; fi
             sleep 1
           done
           if [[ "$ready" != 1 ]]; then
