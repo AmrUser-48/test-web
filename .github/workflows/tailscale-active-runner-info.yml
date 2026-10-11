@@ -30,37 +30,31 @@ jobs:
           import sys
 
           data = json.load(open(sys.argv[1], encoding="utf-8"))
-          peers = data.get("Peer") or {}
-          matches = []
-          for peer in peers.values():
-              hostinfo = peer.get("Hostinfo") or {}
-              os_name = str(hostinfo.get("OS", ""))
-              online = peer.get("Online") is True
-              if os_name.lower() != "macos" or not online:
-                  continue
-              ips = peer.get("TailscaleIPs") or []
-              ip4 = next((ip for ip in ips if "." in ip), None)
-              if not ip4:
-                  continue
-              matches.append((ip4, peer.get("HostName", "unknown"), peer.get("DNSName", "")))
-
-          if not matches:
-              print("No online macOS peers matched the OS filter. Visible peers:")
-              for peer in peers.values():
-                  hostinfo = peer.get("Hostinfo") or {}
-                  print(
-                      f"  host={peer.get('HostName', 'unknown')} "
-                      f"os={hostinfo.get('OS', peer.get('OS', 'unknown'))} "
-                      f"online={peer.get('Online')} ips={peer.get('TailscaleIPs')}"
-                  )
-              sys.exit(0)
-
-          for ip, hostname, dnsname in matches:
-              print(f"macOS runner: {hostname}; Tailscale IPv4: {ip}; DNS: {dnsname}")
-              for port, label in ((5900, "VNC"), (22, "SSH")):
-                  try:
-                      with socket.create_connection((ip, port), timeout=2):
-                          print(f"  {label} port {port}: OPEN")
-                  except OSError as exc:
-                      print(f"  {label} port {port}: not reachable ({exc.__class__.__name__})")
+peers = data.get("Peer") or {}
+if not peers:
+    print("No peers visible in the Tailscale status response.")
+for peer in peers.values():
+    hostinfo = peer.get("Hostinfo") or {}
+    os_name = str(hostinfo.get("OS", peer.get("OS", "unknown"))).strip()
+    online = peer.get("Online") is True
+    ips = peer.get("TailscaleIPs") or []
+    ip4 = next((ip for ip in ips if "." in ip), None)
+    print(f"peer host={peer.get('HostName', 'unknown')} os={os_name!r} online={online} ips={ips}")
+    if not online or not ip4:
+        continue
+    for port, label in ((5900, "VNC"), (22, "SSH")):
+        try:
+            with socket.create_connection((ip4, port), timeout=2):
+                print(f"  {label} port {port}: OPEN")
+                if port == 5900:
+                    try:
+                        greeting = socket.create_connection((ip4, port), timeout=2)
+                        greeting.settimeout(2)
+                        banner = greeting.recv(12)
+                        print(f"  VNC RFB greeting: {banner!r}")
+                        greeting.close()
+                    except OSError as exc:
+                        print(f"  VNC greeting test failed: {exc.__class__.__name__}")
+        except OSError as exc:
+            print(f"  {label} port {port}: not reachable ({exc.__class__.__name__})")
           PY
