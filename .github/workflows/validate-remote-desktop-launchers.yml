@@ -60,6 +60,8 @@ jobs:
               "right-side vertical deskbar": "mode int 2" in workflow and "p=2;x=0;y=0" in workflow,
               "encrypted desktop state": "openssl enc -aes-256-cbc -pbkdf2 -salt" in workflow,
               "cache restoration": "actions/cache/restore@v4" in workflow,
+              "push recovery skips legacy cache": "if: github.event_name != 'push'" in workflow,
+              "push recovery skips old backup artifact": "github.event_name != 'push' && steps.cached-state.outputs.available != 'true'" in workflow,
               "backup artifact fallback": "actions/download-artifact@v4" in workflow,
               "state restore directory outside home": 'restore_dir="/tmp/core2-vnc-state-restore-$GITHUB_RUN_ID"' in restore_step,
               "state extraction has process-group timeout": "timeout --signal=TERM --kill-after=10s 240s bash -o pipefail -c" in restore_step and "timeout --foreground --signal" not in restore_step,
