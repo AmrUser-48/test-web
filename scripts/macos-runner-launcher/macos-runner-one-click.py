@@ -93,19 +93,28 @@ def github_api(method: str, path: str, payload: dict | None = None):
             return json.loads(raw.decode("utf-8"))
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")[:1200]
+        accepted = e.headers.get("X-Accepted-GitHub-Permissions")
+        scopes = e.headers.get("X-OAuth-Scopes")
         if e.code == 401:
-            detail = "Token is invalid/expired. Create a fine-grained token with Actions read/write for AmrUser-48/test-web."
-        elif e.code == 403:
+            detail = "GitHub did not accept this token. Recreate it and replace the saved token. API response: " + detail
+        elif e.code == 403 and method.upper() == "POST" and path.endswith("/dispatches"):
             detail = (
-                "GitHub refused workflow dispatch. GitHub documents Actions: write for fine-grained tokens, "
-                "but there are reports of this exact 403 even when those permissions are set. "
-                "Reliable workaround: create a classic PAT with the repo scope (broader access), "
-                "replace the saved token, and ensure its GitHub account has write access to AmrUser-48/test-web. "
-                "Official endpoint requirements: https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event . "
-                "Do not send the token to anyone. API response: " + detail
+                "GitHub refused workflow dispatch. The token must be authorized to run Actions in this repository. "
+                "This launcher will first check which GitHub account owns the token and whether it has repository write access. "
+                "If using a fine-grained token, give it Actions: Read and write (and select test-web). "
+                "Since fine-grained dispatch has repeatedly failed here, a classic PAT with the repo scope is a fallback, "
+                "but it grants broader repository access. The account owning the token must already have write access. "
+                "Official requirements: https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event . "
+                "API response: " + detail
             )
+        elif e.code == 403:
+            detail = f"GitHub denied {method.upper()} {path}. API response: {detail}"
         elif e.code == 404:
             detail = "Repository/workflow was not found or token cannot access it. " + detail
+        if accepted:
+            detail += " GitHub accepted-permissions header: " + accepted
+        if scopes is not None:
+            detail += " Classic-token scopes reported by GitHub: " + scopes
         die(f"GitHub API returned HTTP {e.code}: {detail}")
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         die(f"Cannot reach GitHub API: {e}")
@@ -118,9 +127,10 @@ def get_token() -> str:
         token = TOKEN_FILE.read_text(encoding="utf-8").strip()
         if token:
             return token
-    say("One-time setup: enter a fine-grained GitHub token for AmrUser-48/test-web.")
-    say("Required repository permission: Actions → Read and write. No Git or GitHub CLI is used.")
-    say("Create token: https://github.com/settings/personal-access-tokens/new")
+    say("One-time setup: enter a GitHub token with write access to AmrUser-48/test-web.")
+    say("Fine-grained token: select test-web and set Actions → Read and write.")
+    say("Since that token type has already returned 403 here, a classic PAT with the repo scope is the fallback (broader access).")
+    say("Classic token: https://github.com/settings/tokens/new")
     token = getpass.getpass("GitHub token (input hidden): ").strip()
     if not token:
         die("No token entered.")
@@ -261,6 +271,20 @@ def main() -> int:
     except (subprocess.SubprocessError, OSError):
         die("This machine has no connected Tailscale IPv4 address. Connect Tailscale first.")
     TOKEN = get_token()
+
+    # Fail early with the actual token owner and repository role. A PAT's scopes
+    # cannot grant write access if its owning account is only a read-only user.
+    profile = github_api("GET", "/user")
+    login = str(profile.get("login") or "unknown")
+    say(f"GitHub token authenticated as @{login}")
+    repo_info = github_api("GET", f"/repos/{REPO}")
+    repo_permissions = repo_info.get("permissions")
+    if isinstance(repo_permissions, dict) and repo_permissions.get("push") is False:
+        die(
+            f"GitHub account @{login} has no repository write/push access to {REPO}. "
+            "The token cannot grant account permissions. Add this account as a collaborator with write access, "
+            "or use a token owned by an account that already has write access."
+        )
 
     workflow_path = urllib.parse.quote(target["workflow"], safe="")
     runs_path = f"/repos/{REPO}/actions/workflows/{workflow_path}/runs?per_page=20"
