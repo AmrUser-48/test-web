@@ -52,6 +52,7 @@ jobs:
         uses: tailscale/github-action@v4
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          hostname: github-macos-${{ github.run_id }}
 
       - name: Preserve system DNS for GitHub artifact uploads
         shell: bash
