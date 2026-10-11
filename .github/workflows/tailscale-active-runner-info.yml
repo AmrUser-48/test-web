@@ -1,4 +1,5 @@
 name: Find active macOS runner on Tailscale
+# Rerun peer and TCP-port probes after runner startup changes.
 
 on:
   workflow_dispatch:
