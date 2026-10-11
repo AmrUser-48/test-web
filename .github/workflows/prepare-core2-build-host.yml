@@ -41,6 +41,7 @@ jobs:
           dpkg-buildflags --get CXXFLAGS
 
       - name: Open temporary SSH shell
-        uses: mxschmitt/action-tmate@v3
+        uses: owenthereal/action-upterm@v2
         with:
           limit-access-to-actor: true
+          wait-timeout-minutes: 360
