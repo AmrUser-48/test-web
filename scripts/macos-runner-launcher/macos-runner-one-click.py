@@ -231,13 +231,19 @@ def main() -> int:
                         help="macos (default) or ubuntu Core 2 desktop")
     parser.add_argument("--reset-vnc-password", action="store_true",
                         help="replace the locally saved VNC password file")
+    parser.add_argument("--setup-vnc-password", action="store_true",
+                        help="save or reset the local VNC password file, then exit")
     args = parser.parse_args()
     target = TARGETS[args.target]
     if SESSION_MINUTES not in {"30", "60", "180", "300", "350"}:
         die("SESSION_MINUTES must be 30, 60, 180, 300, or 350.")
-    require_command("tailscale")
-    require_command("vncviewer")
+    if not args.setup_vnc_password:
+        require_command("tailscale")
+        require_command("vncviewer")
     ensure_vnc_password_file(reset=args.reset_vnc_password)
+    if args.setup_vnc_password:
+        say("Local VNC password file is ready; no runner was started.")
+        return 0
 
     tailscale_status()
     try:
