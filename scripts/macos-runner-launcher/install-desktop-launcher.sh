@@ -39,8 +39,8 @@ missing=()
 command -v python3 >/dev/null 2>&1 || missing+=(python3)
 command -v tailscale >/dev/null 2>&1 || missing+=(tailscale)
 command -v vncviewer >/dev/null 2>&1 || missing+=(tigervnc-viewer)
-if (("\${#missing[@]}")); then
-  echo "Missing existing commands/packages: \${missing[*]}"
+if (("${#missing[@]}")); then
+  echo "Missing existing commands/packages: ${missing[*]}"
   echo "Install only what is missing; this installer will not run apt or install dependencies."
 else
   echo "Available: Python 3, Tailscale CLI, vncviewer."
