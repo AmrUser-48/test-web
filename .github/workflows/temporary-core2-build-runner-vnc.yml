@@ -143,26 +143,37 @@ jobs:
         run: |
           set -euo pipefail
           archive="$RUNNER_TEMP/core2-vnc-state.tar.gz.enc"
-          restore_dir="$RUNNER_TEMP/core2-vnc-state-restore"
+          # IMPORTANT: never unpack under $HOME. The restored archive contains
+          # ./work, and RUNNER_TEMP itself lives under $HOME/work/_temp. Unpacking
+          # there makes the source overlap the destination during cp -a and can
+          # cause a huge recursive/slow copy. /tmp is outside $HOME.
+          restore_dir="/tmp/core2-vnc-state-restore-$GITHUB_RUN_ID"
           rm -rf "$restore_dir"
           mkdir -p "$restore_dir" "$HOME"
+          trap 'rm -rf "$restore_dir"' EXIT
 
           if [[ -s "$archive" ]]; then
-            if openssl enc -d -aes-256-cbc -pbkdf2 -salt \
-              -pass env:TAILSCALE_AUTHKEY -in "$archive" |
-              tar -xzf - -C "$restore_dir"; then
+            echo "Encrypted desktop-state archive: $(du -h "$archive" | cut -f1)"
+            echo "Free space before restore:"
+            df -h "$HOME" /tmp
+            if timeout --foreground --signal=TERM --kill-after=10s 240s bash -o pipefail -c '
+              openssl enc -d -aes-256-cbc -pbkdf2 -salt \
+                -pass env:TAILSCALE_AUTHKEY -in "$1" |
+                tar -xzf - -C "$2"
+            ' _ "$archive" "$restore_dir"; then
+              echo "Archive extracted; restoring files into the runner home directory."
               cp -a "$restore_dir/." "$HOME/"
               echo "DESKTOP_STATE_RESTORED=1" >> "$GITHUB_ENV"
-              echo "Restored encrypted XFCE settings, Chrome profile, Desktop, Documents, and Downloads."
+              echo "Restored encrypted XFCE settings, Chrome profile, Desktop, Documents, Downloads, and workspace files."
             else
-              echo "::warning::Could not decrypt the previous state archive; starting with a fresh desktop."
+              rc=$?
+              echo "::warning::Could not extract/decrypt desktop-state archive (exit $rc or 240-second timeout); starting with a fresh desktop."
               echo "DESKTOP_STATE_RESTORED=0" >> "$GITHUB_ENV"
             fi
           else
             echo "No saved desktop state found; starting with the initial dark deskbar layout."
             echo "DESKTOP_STATE_RESTORED=0" >> "$GITHUB_ENV"
           fi
-          rm -rf "$restore_dir"
 
       - name: Install Core 2 build tools and private SSH/VNC services
         shell: bash
@@ -410,6 +421,7 @@ jobs:
           tar --exclude='./.ssh' \
               --exclude='./.vnc' \
               --exclude='./.cache' \
+              --exclude='./work/_tool' \
               --exclude='./.npm' \
               --exclude='./.cargo/registry' \
               --exclude='./.rustup/downloads' \
