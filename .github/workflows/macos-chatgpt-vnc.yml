@@ -94,22 +94,17 @@ jobs:
             --remote-debugging-port=9222 \
             https://chatgpt.com >/tmp/chrome-open.log 2>&1 </dev/null &
 
-          ready=0
-          for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:9222/json/version >/tmp/chrome-version.json; then
-              ready=1
-              break
-            fi
-            sleep 2
-          done
-          if [[ "$ready" != 1 ]]; then
-            echo "::error::Chrome remote debugging endpoint did not start."
-            cat /tmp/chrome-open.log || true
-            ps aux | grep -i '[G]oogle Chrome' || true
-            exit 1
-          fi
-          echo "Chrome launched; browser endpoint responds."
-          cat /tmp/chrome-version.json
+          # Hosted macOS can suspend headful applications without an active GUI session.
+          # Do not make Chrome's optional debugging port a prerequisite for Screen Sharing.
+          sleep 3
+          echo "=== Chrome process ==="
+          ps aux | grep -i '[G]oogle Chrome' || true
+          echo "=== GUI session ==="
+          who || true
+          launchctl list | grep -E 'WindowServer|loginwindow|screensharing' || true
+          echo "Chrome launch log:"
+          cat /tmp/chrome-open.log || true
+
 
       - name: Enable macOS Screen Sharing (VNC)
         shell: bash
