@@ -446,7 +446,7 @@ jobs:
           retention-days: 30
 
       - name: Keep only the newest encrypted state backup
-        if: steps.snapshot-state.outcome == 'success' && steps.upload-state.outcome == 'success'
+        if: always() && steps.snapshot-state.outcome == 'success' && steps.upload-state.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           CURRENT_ARTIFACT_NAME: core2-vnc-state-${{ github.run_id }}-${{ github.run_attempt }}
