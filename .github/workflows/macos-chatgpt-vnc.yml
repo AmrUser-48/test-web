@@ -8,10 +8,12 @@ on:
         required: true
         type: choice
         options:
-          - "15"
           - "30"
           - "60"
-        default: "30"
+          - "180"
+          - "300"
+          - "350"
+        default: "350"
   push:
     paths:
       - ".github/workflows/macos-chatgpt-vnc.yml"
@@ -20,18 +22,18 @@ permissions:
   contents: read
 
 concurrency:
-  group: macos-chatgpt-vnc-v3
+  group: macos-chatgpt-vnc-v4
   cancel-in-progress: true
 
 jobs:
   macos-vnc:
     name: Start temporary macOS M1 desktop
     runs-on: macos-15
-    timeout-minutes: 65
+    timeout-minutes: 360
     env:
       TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
       VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
-      SESSION_MINUTES: ${{ inputs.session_minutes || '60' }}
+      SESSION_MINUTES: ${{ inputs.session_minutes || '350' }}
 
     steps:
       - name: Validate secrets
