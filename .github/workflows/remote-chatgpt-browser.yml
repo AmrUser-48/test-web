@@ -18,6 +18,10 @@ on:
     paths:
       - ".github/workflows/remote-chatgpt-browser.yml"
 
+concurrency:
+  group: remote-chatgpt-vnc
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -108,22 +112,54 @@ jobs:
 
           docker exec -u root -d remote-chatgpt sh -lc "x11vnc -display '$DISPLAY_NAME' -noshm -rfbport 5900 -forever -shared -nopw -listen 0.0.0.0 -noxdamage -repeat >/tmp/x11vnc.log 2>&1"
 
-          ready=0
-          for _ in $(seq 1 30); do
-            reply="$(timeout 3 bash -c 'exec 3<>/dev/tcp/$1/5900; head -c 12 <&3' _ "$TAILSCALE_IP" 2>/dev/null || true)"
-            if [[ "$reply" == RFB* ]]; then
-              ready=1
-              break
-            fi
-            sleep 1
-          done
+          # Test the full RFB 3.8 security handshake and ServerInit, not just
+          # the initial 12-byte greeting. That catches a listener that drops
+          # connections before a VNC client can establish a desktop session.
+          python3 - "$TAILSCALE_IP" <<'PY'
+          import socket
+          import struct
+          import sys
 
-          if [[ "$ready" != 1 ]]; then
-            docker exec remote-chatgpt sh -lc 'cat /tmp/x11vnc.log || true; ps -ef | grep "[x]11vnc" || true'
-            docker logs --tail=100 remote-chatgpt || true
-            echo "::error::VNC did not answer on the private Tailscale address."
-            exit 1
-          fi
+          host = sys.argv[1]
+
+          def recv_exact(sock, size):
+              chunks = []
+              remaining = size
+              while remaining:
+                  chunk = sock.recv(remaining)
+                  if not chunk:
+                      raise RuntimeError("VNC closed the connection during handshake")
+                  chunks.append(chunk)
+                  remaining -= len(chunk)
+              return b"".join(chunks)
+
+          with socket.create_connection((host, 5900), timeout=8) as sock:
+              sock.settimeout(8)
+              greeting = recv_exact(sock, 12)
+              if not greeting.startswith(b"RFB "):
+                  raise RuntimeError(f"Unexpected VNC greeting: {greeting!r}")
+              sock.sendall(b"RFB 003.008\\n")
+              count = recv_exact(sock, 1)[0]
+              if count == 0:
+                  length = struct.unpack(">I", recv_exact(sock, 4))[0]
+                  reason = recv_exact(sock, min(length, 4096)).decode("utf-8", "replace")
+                  raise RuntimeError("VNC rejected connection: " + reason)
+              security_types = recv_exact(sock, count)
+              if 1 not in security_types:
+                  raise RuntimeError(f"VNC offered unexpected security types: {list(security_types)}")
+              sock.sendall(b"\\x01")  # No-auth security; port is Tailscale-only.
+              result = struct.unpack(">I", recv_exact(sock, 4))[0]
+              if result != 0:
+                  raise RuntimeError(f"VNC security handshake failed: result={result}")
+              sock.sendall(b"\\x01")  # ClientInit: shared session.
+              server_init = recv_exact(sock, 24)
+              width, height = struct.unpack(">HH", server_init[:4])
+              name_length = struct.unpack(">I", server_init[20:24])[0]
+              desktop_name = recv_exact(sock, name_length).decode("utf-8", "replace")
+              if width < 1 or height < 1:
+                  raise RuntimeError(f"Invalid VNC desktop dimensions: {width}x{height}")
+              print(f"PASS: complete RFB handshake; desktop={width}x{height}; name={desktop_name!r}")
+          PY
 
           {
             echo "## Remote ChatGPT — native VNC"
