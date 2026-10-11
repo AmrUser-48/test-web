@@ -402,34 +402,31 @@ jobs:
           done
           find "$HOME/.config/google-chrome" -maxdepth 2 -name 'Singleton*' -delete 2>/dev/null || true
 
-          paths=(
-            .config/xfce4
-            .config/gtk-3.0
-            .config/google-chrome
-            .local/share/applications
-            Desktop
-            Documents
-            Downloads
-          )
-          existing=()
-          for path in "${paths[@]}"; do
-            [[ -e "$HOME/$path" ]] && existing+=("$path")
-          done
-          if [[ "${#existing[@]}" -eq 0 ]]; then
-            echo "::error::No state paths were available to save."
-            exit 1
-          fi
-
-          # The cache/artifact contains ciphertext only; the existing random
-          # Tailscale auth key is the encryption passphrase.
-          tar --exclude='*/Cache/*' --exclude='*/Code Cache/*' \
-              --exclude='*/GPUCache/*' --exclude='*/ShaderCache/*' \
-              --exclude='*/BrowserMetrics/*' -C "$HOME" -czf - "${existing[@]}" |
+          # Save the whole user home, including the GitHub workspace under
+          # ~/work, so files and browser/session changes survive runner teardown.
+          # Exclude per-run SSH/VNC credentials, temporary workflow scripts,
+          # downloaded action code, and disposable download/build caches.
+          # The archive is encrypted before it enters the cache or artifact store.
+          tar --exclude='./.ssh' \
+              --exclude='./.vnc' \
+              --exclude='./.cache' \
+              --exclude='./.npm' \
+              --exclude='./.cargo/registry' \
+              --exclude='./.rustup/downloads' \
+              --exclude='./.local/share/Trash' \
+              --exclude='./work/_temp' \
+              --exclude='./work/_actions' \
+              --exclude='*/Cache/*' \
+              --exclude='*/Code Cache/*' \
+              --exclude='*/GPUCache/*' \
+              --exclude='*/ShaderCache/*' \
+              --exclude='*/BrowserMetrics/*' \
+              -C "$HOME" -czf - . |
             openssl enc -aes-256-cbc -pbkdf2 -salt \
               -pass env:TAILSCALE_AUTHKEY -out "$state_file"
           chmod 600 "$state_file"
           test -s "$state_file"
-          echo "Encrypted desktop state saved ($(du -h "$state_file" | cut -f1))."
+          echo "Encrypted home, workspace, desktop, and browser state saved ($(du -h "$state_file" | cut -f1))."
 
       - name: Save encrypted desktop-state cache
         if: always() && steps.snapshot-state.outcome == 'success'
