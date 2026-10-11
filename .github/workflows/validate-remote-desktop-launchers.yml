@@ -48,7 +48,7 @@ jobs:
               "Ubuntu workflow target": '"temporary-core2-build-runner-vnc.yml"' in launcher,
               "fresh unique runner hostname matching": '"github-core2"' in launcher and '"github-macos"' in launcher,
               "saved VNC password file": '"-passwd", str(VNC_PASS_FILE)' in launcher,
-              "viewer exit leaves remote workflow alive": "The remote workflow remains active until its configured timeout." in launcher and "finally:\\n                        cancel_run_if_active()" not in launcher,
+              "viewer exit leaves remote workflow alive": "Closing or crashing TigerVNC will NOT stop the remote workflow." in launcher and "The remote workflow remains active until its configured timeout." in launcher and "Close the VNC viewer or press Ctrl+C here to stop this workflow." not in launcher,
               "token saved with restrictive permissions": 'os.chmod(TOKEN_FILE, 0o600)' in launcher,
               "both desktop icons": "Launch macOS ChatGPT Runner.desktop" in installer and "Launch Ubuntu Core2 VNC Runner.desktop" in installer,
               "no automatic apt installs in installer": "apt-get install" not in installer and "apt install" not in installer,
