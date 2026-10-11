@@ -1,6 +1,10 @@
 name: Temporary Core 2 build runner (SSH + VNC over Tailscale)
 
 on:
+  # One-time clean-start trigger; removed after run is queued.
+  push:
+    paths:
+      - ".github/workflows/temporary-core2-build-runner-vnc.yml"
   workflow_dispatch:
     inputs:
       session_minutes:
@@ -20,9 +24,8 @@ permissions:
   actions: write
 
 concurrency:
-  # Recovery group separates the corrected run from an older runner wedged in
-  # the previous restore step. Keep this distinct so it can start immediately.
-  group: temporary-core2-build-runner-vnc-recovery
+  # One-time clean-start group bypasses any wedged restore attempts.
+  group: temporary-core2-build-runner-vnc-clean-recovery
   cancel-in-progress: true
 
 jobs:
