@@ -133,15 +133,15 @@ jobs:
             -configure -allowAccessFor -allUsers \
             -configure -privs -all \
             -configure -clientopts -setvnclegacy -vnclegacy yes -setvncpw -vncpw "$VNC_PASS_SHORT" \
-            -restart -agent
+            -restart -agent -menu
 
+          # Use the same legacy Screen Sharing activation sequence as known
+          # macOS VNC workflows; launchctl load installs the socket listener.
+          sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null || true
           sudo launchctl enable system/com.apple.screensharing || true
-          # On hosted macOS, kickstart alone may not load the socket-activated
-          # Screen Sharing launch daemon. Bootstrap its plist before probing 5900.
-          sudo launchctl bootstrap system /System/Library/LaunchDaemons/com.apple.screensharing.plist || true
+          sudo launchctl bootstrap system /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null || true
           sudo launchctl kickstart -k system/com.apple.screensharing || true
-          sudo launchctl print system/com.apple.screensharing || true
-          sleep 3
+          sleep 5
 
           TAILSCALE_IP="$(tailscale ip -4 | head -n 1)"
           if [[ -z "$TAILSCALE_IP" ]]; then
