@@ -116,7 +116,7 @@ jobs:
           {
             echo "## Temporary Core 2 build runner — SSH + VNC"
             echo
-            echo "VNC browser URL: ${url}/vnc.html"
+            echo "VNC browser URL: ${url}/vnc.html?autoconnect=true&resize=remote&path=websockify"
             echo
             echo "At the noVNC page, connect to the desktop and enter the VNC password stored as repository secret VNC_PASSWORD."
             echo "SSH remains available through the separate Upterm step."
@@ -124,7 +124,7 @@ jobs:
             echo
             echo "The VNC server listens on localhost only; the public tunnel reaches the noVNC web client, and the VNC server still requires its password."
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "noVNC HTTPS URL: ${url}/vnc.html"
+          echo "noVNC HTTPS URL: ${url}/vnc.html?autoconnect=true&resize=remote&path=websockify"
           echo "Local noVNC health check already passed; skipping external DNS probe to avoid failing on tunnel DNS propagation."
 
       - name: Open temporary SSH shell
