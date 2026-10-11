@@ -125,7 +125,7 @@ jobs:
             echo "The VNC server listens on localhost only; the public tunnel reaches the noVNC web client, and the VNC server still requires its password."
           } >> "$GITHUB_STEP_SUMMARY"
           echo "noVNC HTTPS URL: ${url}/vnc.html"
-          curl --connect-timeout 5 --max-time 15 -fsS "${url}/vnc.html" -o /dev/null
+          echo "Local noVNC health check already passed; skipping external DNS probe to avoid failing on tunnel DNS propagation."
 
       - name: Open temporary SSH shell
         uses: owenthereal/action-upterm@v2
