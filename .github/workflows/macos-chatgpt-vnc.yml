@@ -31,7 +31,7 @@ jobs:
     env:
       TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
       VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
-      SESSION_MINUTES: ${{ inputs.session_minutes || '30' }}
+      SESSION_MINUTES: ${{ inputs.session_minutes || '60' }}
 
     steps:
       - name: Validate secrets
@@ -141,21 +141,21 @@ jobs:
           echo "=== Port 5900 listener ==="
           lsof -nP -iTCP:5900 -sTCP:LISTEN || true
 
+          # Verify that the service actually sends an RFB greeting, not just that
+          # TCP accepts a connection.
           ready=0
           for _ in $(seq 1 20); do
-            if nc -z 127.0.0.1 5900; then ready=1; break; fi
+            reply="$(timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/5900; head -c 12 <&3' 2>/dev/null || true)"
+            if [[ "$reply" == RFB* ]]; then ready=1; break; fi
             sleep 1
           done
           if [[ "$ready" != 1 ]]; then
             sudo "$KICKSTART" -agent -settings || true
             sudo launchctl print system/com.apple.screensharing || true
-            echo "::error::macOS Screen Sharing did not listen on TCP port 5900."
+            echo "::error::macOS Screen Sharing did not complete the RFB greeting on TCP port 5900."
             exit 1
           fi
-
-          # Prove the VNC handshake works locally before publishing the address.
-          printf 'RFB probe: '
-          timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/5900; head -c 12 <&3' || true
+          echo "PASS: Screen Sharing sent RFB greeting: $reply"
 
           {
             echo "## macOS M1 ChatGPT desktop"
@@ -170,6 +170,73 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           echo "PASS: local VNC port is listening. Connect from Debian to $TAILSCALE_IP::5900."
+
+      - name: Enable SSH on the private Tailscale address
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAILSCALE_IP="$(tailscale ip -4 | head -n 1)"
+          SSH_USER="$(id -un)"
+          KEY_BASE="$RUNNER_TEMP/macos-runner-ssh"
+
+          # Generate a short-lived ed25519 key; encrypt the downloadable private key
+          # with the existing VNC_PASSWORD secret before uploading it.
+          ssh-keygen -q -t ed25519 -N "" -C "GitHub macOS runner $GITHUB_RUN_ID" -f "$KEY_BASE"
+          install -d -m 700 "$HOME/.ssh"
+          touch "$HOME/.ssh/authorized_keys"
+          chmod 600 "$HOME/.ssh/authorized_keys"
+          cat "$KEY_BASE.pub" >> "$HOME/.ssh/authorized_keys"
+
+          sudo systemsetup -setremotelogin off >/dev/null 2>&1 || true
+          sudo launchctl disable system/com.openssh.sshd >/dev/null 2>&1 || true
+          sudo launchctl bootout system /System/Library/LaunchDaemons/ssh.plist >/dev/null 2>&1 || true
+          sudo /usr/sbin/sshd -t
+          sudo nohup /usr/sbin/sshd -D \
+            -o "ListenAddress=$TAILSCALE_IP" \
+            -o "PermitRootLogin=no" \
+            -o "PasswordAuthentication=no" \
+            -o "KbdInteractiveAuthentication=no" \
+            -o "PubkeyAuthentication=yes" \
+            -o "AllowUsers=$SSH_USER" \
+            >>"$RUNNER_TEMP/sshd.log" 2>&1 </dev/null &
+
+          ready=0
+          for _ in $(seq 1 20); do
+            if nc -z "$TAILSCALE_IP" 22; then ready=1; break; fi
+            sleep 1
+          done
+          if [[ "$ready" != 1 ]]; then
+            cat "$RUNNER_TEMP/sshd.log" || true
+            echo "::error::SSH did not listen on the Tailscale IP $TAILSCALE_IP:22."
+            exit 1
+          fi
+
+          if [[ -z "$VNC_PASSWORD" || ${#VNC_PASSWORD} -lt 8 ]]; then
+            echo "::error::VNC_PASSWORD must be set and contain at least 8 characters to encrypt the SSH key."
+            exit 1
+          fi
+          ssh-keygen -p -P "" -N "$VNC_PASSWORD" -f "$KEY_BASE" >/dev/null
+          echo "MACOS_SSH_KEY_PATH=$KEY_BASE" >> "$GITHUB_ENV"
+          echo "MACOS_SSH_USER=$SSH_USER" >> "$GITHUB_ENV"
+
+          {
+            echo
+            echo "### Private SSH access"
+            echo
+            echo "- SSH address: `$SSH_USER@$TAILSCALE_IP` (port 22, Tailscale IP only)"
+            echo "- Download artifact: `macos-tailscale-ssh-key-${GITHUB_RUN_ID}`"
+            echo "- The private key is encrypted; use the full `VNC_PASSWORD` secret as its passphrase."
+            echo "- Debian command after extracting the artifact: `chmod 600 macos-runner-ssh && ssh -i macos-runner-ssh $SSH_USER@$TAILSCALE_IP`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "PASS: SSH is listening on the private Tailscale IP $TAILSCALE_IP:22."
+
+      - name: Upload encrypted macOS SSH key
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-tailscale-ssh-key-${{ github.run_id }}
+          path: ${{ runner.temp }}/macos-runner-ssh
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Keep macOS desktop alive
         shell: bash
