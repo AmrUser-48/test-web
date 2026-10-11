@@ -5,6 +5,7 @@ on:
     paths:
       - "scripts/macos-runner-launcher/**"
       - ".github/workflows/temporary-core2-build-runner-vnc.yml"
+      - ".github/workflows/validate-remote-desktop-launchers.yml"
   workflow_dispatch:
 
 permissions:
