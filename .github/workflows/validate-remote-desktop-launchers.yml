@@ -68,7 +68,7 @@ jobs:
               "state copy has timeout": 'timeout --signal=TERM --kill-after=10s 180s cp -a' in restore_step,
               "future snapshots exclude runner tool cache": "--exclude='./work/_tool'" in workflow,
               "state snapshot before service shutdown": workflow.index("Snapshot and encrypt desktop state") < workflow.index("Stop VNC and SSH services"),
-              "docs explain password persistence": "no VNC password prompt" in docs,
+              "docs explain local credential handling": "The local VNC password file is obfuscated by TigerVNC" in docs and "decrypts it locally using OpenSSL" in docs,
               "macOS workflow is manual-only": "push:" not in macos_workflow,
               "macOS workflow uses Apple Silicon runner": "runs-on: macos-15" in macos_workflow,
               "macOS workflow installs current RustDesk ARM64 app": 'VERSION="1.5.0"' in macos_workflow and "aarch64.dmg" in macos_workflow and "Install and verify RustDesk" in macos_workflow,
