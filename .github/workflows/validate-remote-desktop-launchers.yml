@@ -75,6 +75,7 @@ jobs:
               "macOS workflow avoids native Screen Sharing": "screensharingd" not in macos_workflow and "RFB" not in macos_workflow and "kickstart" not in macos_workflow,
               "macOS connection credentials are encrypted": "openssl enc -aes-256-cbc -pbkdf2 -salt" in macos_workflow and "-pass env:VNC_PASSWORD" in macos_workflow and "macos-rustdesk-credentials-" in macos_workflow and "github.run_id" in macos_workflow,
               "launcher decrypts the artifact locally": "StripCrossHostAuthorizationRedirect" in launcher and '"openssl", "enc", "-d", "-aes-256-cbc", "-pbkdf2", "-salt"' in launcher,
+              "launcher can reuse an active macOS run": '"--reuse-run-id"' in launcher and 'info.get("path") != ".github/workflows/macos-chatgpt-vnc.yml"' in launcher,
               "macOS no longer requires Tailscale or TigerVNC": 'if target["connection"] == "rustdesk":' in launcher and 'require_command("rustdesk")' in launcher,
               "installer checks RustDesk without auto-installing": 'command -v rustdesk' in installer and "apt install" not in installer,
           }
