@@ -61,7 +61,8 @@ For Ubuntu, the same `VNC_PASSWORD` configures VNC. The launcher writes a TigerV
 2. Enter the `VNC_PASSWORD` Actions secret when prompted, then your GitHub token if it is not saved.
 3. The workflow starts a macOS 15 Apple Silicon runner, opens Chrome at ChatGPT, installs RustDesk, creates an ephemeral ID/password, and uploads the credentials encrypted with `VNC_PASSWORD`.
 4. The launcher decrypts the artifact locally and opens RustDesk. Enter the displayed ID in RustDesk and supply the displayed password.
-5. Closing RustDesk does **not** stop the remote workflow. Cancel the Actions run to stop the session early; otherwise it ends at the selected timeout (350 minutes by default).
+5. To connect to a running session without starting another runner, use `--target macos --reuse-run-id RUN_ID` with that session's GitHub Actions run ID.
+6. Closing RustDesk does **not** stop the remote workflow. Cancel the Actions run to stop the session early; otherwise it ends at the selected timeout (350 minutes by default).
 
 The credential artifact expires after one day. The generated connection password is different on every run.
 
