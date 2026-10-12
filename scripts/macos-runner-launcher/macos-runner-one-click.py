@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""One-click launcher for the temporary macOS or Ubuntu VNC runner.
+"""One-click launcher for a temporary macOS RustDesk or Ubuntu VNC desktop.
 
-Uses only Python's standard library plus existing Tailscale/TigerVNC commands.
+Uses Python standard library plus existing local desktop clients and OpenSSL.
 No Git, GitHub CLI, curl, jq, Node.js, Docker, or pip packages are required.
 """
 from __future__ import annotations
 
 import argparse
 import getpass
+import io
 import json
 import os
 import pathlib
@@ -20,6 +21,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
+import zipfile
 
 REPO = "AmrUser-48/test-web"
 BRANCH = "main"
@@ -30,22 +32,22 @@ API = "https://api.github.com"
 CONFIG_DIR = pathlib.Path.home() / ".config" / "macos-runner-launcher"
 TOKEN_FILE = CONFIG_DIR / "token"
 VNC_PASS_FILE = pathlib.Path.home() / ".config" / "tigervnc" / "runner-passwd"
+RUSTDESK_ARTIFACT_PREFIX = "macos-rustdesk-credentials-"
 RUN_ID: int | None = None
 TOKEN: str | None = None
 
 TARGETS = {
     "macos": {
         "workflow": "macos-chatgpt-vnc.yml",
-        "hostname_prefix": "github-macos",
-        "accepted_os": {"macos", "darwin"},
-        "label": "macOS ChatGPT",
-        "vnc_password_limit": 8,
+        "label": "macOS ChatGPT M1 desktop (RustDesk)",
+        "connection": "rustdesk",
     },
     "ubuntu": {
         "workflow": "temporary-core2-build-runner-vnc.yml",
         "hostname_prefix": "github-core2",
         "accepted_os": {"linux"},
         "label": "Ubuntu Core 2 desktop",
+        "connection": "vnc",
         "vnc_password_limit": 8,
     },
 }
@@ -66,6 +68,10 @@ def require_command(name: str) -> None:
             die("TigerVNC viewer is missing. If needed, install only: sudo apt install tigervnc-viewer")
         if name == "tailscale":
             die("Tailscale CLI is missing. This script does not install dependencies.")
+        if name == "rustdesk":
+            die("RustDesk client is missing. Install the official Debian 12 x86_64 package from https://github.com/rustdesk/rustdesk/releases/download/1.5.0/rustdesk-1.5.0-x86_64.deb")
+        if name == "openssl":
+            die("OpenSSL is missing; it is needed to decrypt this session's credential artifact.")
         die(f"Required command is missing: {name}")
 
 
@@ -240,36 +246,178 @@ def rfb_greeting(ip: str) -> str | None:
     return None
 
 
+
+class StripCrossHostAuthorizationRedirect(urllib.request.HTTPRedirectHandler):
+    """Never forward the GitHub bearer token to the artifact storage host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None:
+            old_host = urllib.parse.urlparse(req.full_url).netloc
+            new_host = urllib.parse.urlparse(newurl).netloc
+            if old_host.lower() != new_host.lower():
+                for collection in (redirected.headers, redirected.unredirected_hdrs):
+                    for key in list(collection):
+                        if key.lower() == "authorization":
+                            del collection[key]
+        return redirected
+
+
+def download_artifact_zip(artifact_id: int) -> bytes:
+    """Download a GitHub artifact while stripping Authorization on cross-host redirects."""
+    if not TOKEN:
+        die("GitHub token is not configured.")
+    url = f"{API}/repos/{REPO}/actions/artifacts/{artifact_id}/zip"
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {TOKEN}",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "runner-one-click",
+        },
+    )
+    opener = urllib.request.build_opener(StripCrossHostAuthorizationRedirect())
+    try:
+        with opener.open(request, timeout=60) as response:
+            data = response.read(8 * 1024 * 1024 + 1)
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        die(f"Cannot download the encrypted credential artifact: {e}")
+    if len(data) > 8 * 1024 * 1024:
+        die("Credential artifact is unexpectedly large; refusing to process it.")
+    return data
+
+
+def get_rustdesk_credentials(run_id: int, encryption_key: str) -> tuple[str, str]:
+    """Wait for this run's encrypted artifact and decrypt it locally with OpenSSL."""
+    deadline = time.monotonic() + WAIT_SECONDS
+    last_status = None
+    artifact_name = f"{RUSTDESK_ARTIFACT_PREFIX}{run_id}"
+    say("Waiting for this run's encrypted RustDesk credentials artifact…")
+    while time.monotonic() < deadline:
+        artifacts = github_api("GET", f"/repos/{REPO}/actions/runs/{run_id}/artifacts?per_page=100")
+        artifact = next(
+            (item for item in artifacts.get("artifacts", [])
+             if item.get("name") == artifact_name and not item.get("expired")),
+            None,
+        )
+        if artifact:
+            archive_bytes = download_artifact_zip(int(artifact["id"]))
+            try:
+                with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+                    matches = [n for n in archive.namelist() if n.endswith("connection-info.txt.enc")]
+                    if len(matches) != 1:
+                        raise ValueError("the archive did not contain exactly one encrypted credential file")
+                    encrypted = archive.read(matches[0])
+            except (zipfile.BadZipFile, OSError, ValueError) as e:
+                die(f"Could not read the credential artifact: {e}")
+
+            env = os.environ.copy()
+            env["RUNNER_CREDENTIALS_KEY"] = encryption_key
+            try:
+                decoded = subprocess.run(
+                    [
+                        "openssl", "enc", "-d", "-aes-256-cbc", "-pbkdf2", "-salt",
+                        "-pass", "env:RUNNER_CREDENTIALS_KEY",
+                    ],
+                    input=encrypted,
+                    capture_output=True,
+                    check=True,
+                    timeout=20,
+                    env=env,
+                ).stdout.decode("utf-8")
+            except (subprocess.SubprocessError, OSError, UnicodeDecodeError):
+                cancel_run_if_active()
+                die("Could not decrypt the artifact. Check that VNC_PASSWORD matches the repository secret; the run was cancelled.")
+
+            fields = {}
+            for line in decoded.splitlines():
+                key, sep, value = line.partition("=")
+                if sep:
+                    fields[key.strip()] = value.strip()
+            remote_id = fields.get("RUSTDESK_ID", "")
+            remote_password = fields.get("RUSTDESK_PASSWORD", "")
+            if not remote_id.isdigit() or not 6 <= len(remote_id) <= 12 or len(remote_password) < 12:
+                cancel_run_if_active()
+                die("The decrypted credential file is incomplete; the run was cancelled.")
+            return remote_id, remote_password
+
+        info = run_status(run_id)
+        status = (info.get("status", "unknown"), info.get("conclusion") or "")
+        if status != last_status:
+            say(f"Workflow state: {status[0]} {status[1]}".strip())
+            last_status = status
+        if status[0] == "completed":
+            die(f"The workflow ended before RustDesk credentials were published ({status[1]}). Details: https://github.com/{REPO}/actions/runs/{run_id}")
+        time.sleep(POLL_SECONDS)
+
+    cancel_run_if_active()
+    die(f"Timed out after {WAIT_SECONDS}s waiting for this run's encrypted RustDesk credentials. The run was cancelled.")
+
+
+def open_rustdesk_session(run_id: int, run_url: str, encryption_key: str) -> int:
+    remote_id, remote_password = get_rustdesk_credentials(run_id, encryption_key)
+    try:
+        subprocess.Popen(
+            [shutil.which("rustdesk") or "rustdesk"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as e:
+        die(f"Could not launch RustDesk: {e}. The remote workflow remains active: {run_url}")
+    say("")
+    say("macOS desktop credentials (decrypted locally; not printed to GitHub logs):")
+    say(f"  RustDesk ID: {remote_id}")
+    say(f"  Password:    {remote_password}")
+    say("")
+    say("In RustDesk, connect to the ID above and enter the password when asked.")
+    say("Closing RustDesk does NOT stop the remote workflow.")
+    say(f"To end the session, cancel the workflow here: {run_url}")
+    return 0
+
+
 def main() -> int:
     global TOKEN, RUN_ID
 
-    parser = argparse.ArgumentParser(description="Start a GitHub-hosted desktop and open VNC.")
+    parser = argparse.ArgumentParser(description="Start a temporary macOS RustDesk or Ubuntu VNC desktop.")
     parser.add_argument("--target", choices=sorted(TARGETS), default=os.environ.get("RUNNER_TARGET", "macos"),
-                        help="macos (default) or ubuntu Core 2 desktop")
+                        help="macos (default, RustDesk) or ubuntu Core 2 (VNC)")
     parser.add_argument("--reset-vnc-password", action="store_true",
-                        help="replace the locally saved VNC password file")
+                        help="replace the locally saved Ubuntu VNC password file")
     parser.add_argument("--setup-vnc-password", action="store_true",
-                        help="save or reset the local VNC password file, then exit")
+                        help="save or reset the local Ubuntu VNC password file, then exit")
     args = parser.parse_args()
     target = TARGETS[args.target]
     if SESSION_MINUTES not in {"30", "60", "180", "300", "350"}:
         die("SESSION_MINUTES must be 30, 60, 180, 300, or 350.")
-    if not args.setup_vnc_password:
+
+    credentials_key = None
+    if target["connection"] == "rustdesk":
+        if args.setup_vnc_password or args.reset_vnc_password:
+            die("The macOS RustDesk workflow does not use a local VNC password file.")
+        require_command("rustdesk")
+        require_command("openssl")
+        credentials_key = getpass.getpass("VNC_PASSWORD repository secret (decrypt RustDesk credentials): ")
+        if len(credentials_key) < 8:
+            die("VNC_PASSWORD must contain at least 8 characters.")
+    else:
+        if args.setup_vnc_password:
+            ensure_vnc_password_file(reset=args.reset_vnc_password)
+            say("Local Ubuntu VNC password file is ready; no runner was started.")
+            return 0
         require_command("tailscale")
         require_command("vncviewer")
-    ensure_vnc_password_file(reset=args.reset_vnc_password)
-    if args.setup_vnc_password:
-        say("Local VNC password file is ready; no runner was started.")
-        return 0
-
-    tailscale_status()
-    try:
-        subprocess.run(
-            ["tailscale", "ip", "-4"], check=True,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8
-        )
-    except (subprocess.SubprocessError, OSError):
-        die("This machine has no connected Tailscale IPv4 address. Connect Tailscale first.")
+        ensure_vnc_password_file(reset=args.reset_vnc_password)
+        tailscale_status()
+        try:
+            subprocess.run(
+                ["tailscale", "ip", "-4"], check=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8
+            )
+        except (subprocess.SubprocessError, OSError):
+            die("This machine has no connected Tailscale IPv4 address. Connect Tailscale first.")
     TOKEN = get_token()
 
     # Fail early with the actual token owner and repository role. A PAT's scopes
@@ -319,6 +467,9 @@ def main() -> int:
         webbrowser.open(run_url, new=2)
     except Exception:
         pass
+
+    if target["connection"] == "rustdesk":
+        return open_rustdesk_session(RUN_ID, run_url, credentials_key or "")
 
     expected_hostname = f"{target['hostname_prefix']}-{RUN_ID}".lower()
     say(f"Waiting for Tailscale peer {expected_hostname} and a valid VNC response…")
