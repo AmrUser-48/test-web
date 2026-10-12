@@ -1,4 +1,4 @@
-name: Temporary macOS ChatGPT VNC (M1)
+name: Temporary macOS ChatGPT Desktop (M1, RustDesk)
 
 on:
   workflow_dispatch:
@@ -19,43 +19,27 @@ permissions:
   contents: read
 
 concurrency:
-  group: macos-chatgpt-vnc-v4
+  group: macos-chatgpt-rustdesk-v1
   cancel-in-progress: true
 
 jobs:
-  macos-vnc:
+  macos-desktop:
     name: Start temporary macOS M1 desktop
     runs-on: macos-15
     timeout-minutes: 360
     env:
-      TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
       VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
       SESSION_MINUTES: ${{ inputs.session_minutes || '350' }}
 
     steps:
-      - name: Validate secrets
-        shell: bash
-        run: |
-          if [[ -z "$TAILSCALE_AUTHKEY" ]]; then
-            echo "::error::Missing TAILSCALE_AUTHKEY repository secret."
-            exit 1
-          fi
-          if [[ -z "$VNC_PASSWORD" || ${#VNC_PASSWORD} -lt 8 ]]; then
-            echo "::error::Missing VNC_PASSWORD repository secret (minimum 8 characters)."
-            exit 1
-          fi
-
-      - name: Connect macOS runner to Tailscale
-        uses: tailscale/github-action@v4
-        with:
-          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
-          hostname: github-macos-${{ github.run_id }}
-
-      - name: Preserve system DNS for GitHub artifact uploads
+      - name: Validate credential-encryption secret
         shell: bash
         run: |
           set -euo pipefail
-          sudo tailscale set --accept-dns=false
+          if [[ -z "$VNC_PASSWORD" || ${#VNC_PASSWORD} -lt 8 ]]; then
+            echo "::error::Set repository secret VNC_PASSWORD (at least 8 characters). It encrypts the short-lived RustDesk credentials artifact."
+            exit 1
+          fi
 
       - name: Report hardware and launch Chrome at ChatGPT
         shell: bash
@@ -64,11 +48,10 @@ jobs:
           echo "=== macOS runner ==="
           sw_vers
           uname -a
-          echo "=== Hardware (bounded diagnostic) ==="
+          echo "=== Hardware ==="
           python3 - <<'PY'
           import subprocess
           for data_type in ("SPHardwareDataType", "SPDisplaysDataType"):
-              print("--- " + data_type + " ---", flush=True)
               try:
                   p = subprocess.run(
                       ["system_profiler", data_type],
@@ -76,12 +59,10 @@ jobs:
                   )
                   for line in p.stdout.splitlines():
                       if any(k in line for k in (
-                          "Model Name", "Model Identifier", "Chip:", "Chipset Model",
-                          "Total Number of Cores", "Memory:", "Metal"
+                          "Model Name", "Model Identifier", "Chip:",
+                          "Chipset Model", "Total Number of Cores", "Memory:"
                       )):
                           print(line, flush=True)
-                  if p.returncode:
-                      print("system_profiler exit:", p.returncode, flush=True)
               except subprocess.TimeoutExpired:
                   print("system_profiler timed out; continuing.", flush=True)
           PY
@@ -97,190 +78,123 @@ jobs:
             --user-data-dir="$PROFILE_DIR" \
             --no-first-run \
             --no-default-browser-check \
-            --remote-debugging-port=9222 \
             https://chatgpt.com >/tmp/chrome-open.log 2>&1 </dev/null &
 
-          # Hosted macOS can suspend headful applications without an active GUI session.
-          # Do not make Chrome's optional debugging port a prerequisite for Screen Sharing.
           sleep 3
           echo "=== Chrome process ==="
           ps aux | grep -i '[G]oogle Chrome' || true
-          echo "=== GUI session ==="
-          who || true
-          launchctl list | grep -E 'WindowServer|loginwindow|screensharing' || true
           echo "Chrome launch log:"
           cat /tmp/chrome-open.log || true
 
-
-      - name: Enable macOS Screen Sharing (VNC)
+      - name: Install and verify RustDesk
+        id: rustdesk
         shell: bash
         run: |
           set -euo pipefail
-          KICKSTART="/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart"
-          if [[ ! -x "$KICKSTART" ]]; then
-            echo "::error::Apple Remote Desktop kickstart is unavailable on this macOS image."
-            ls -ld /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources 2>/dev/null || true
+          VERSION="1.5.0"
+          DMG="$RUNNER_TEMP/rustdesk-${VERSION}-aarch64.dmg"
+          MOUNT="$RUNNER_TEMP/rustdesk-mount"
+          APP="/Applications/RustDesk.app"
+          mkdir -p "$MOUNT"
+
+          curl -fL --retry 3 --connect-timeout 20 \
+            "https://github.com/rustdesk/rustdesk/releases/download/${VERSION}/rustdesk-${VERSION}-aarch64.dmg" \
+            -o "$DMG"
+          hdiutil attach "$DMG" -nobrowse -readonly -mountpoint "$MOUNT" >/dev/null
+          if [[ ! -d "$MOUNT/RustDesk.app" ]]; then
+            echo "::error::RustDesk.app was not found in the downloaded disk image."
+            ls -la "$MOUNT" || true
+            hdiutil detach "$MOUNT" -quiet || true
+            exit 1
+          fi
+          sudo rm -rf "$APP"
+          sudo ditto "$MOUNT/RustDesk.app" "$APP"
+          hdiutil detach "$MOUNT" -quiet
+          rm -f "$DMG"
+
+          RUSTDESK_BIN="$APP/Contents/MacOS/RustDesk"
+          if [[ ! -x "$RUSTDESK_BIN" ]]; then
+            RUSTDESK_BIN="$APP/Contents/MacOS/rustdesk"
+          fi
+          if [[ ! -x "$RUSTDESK_BIN" ]]; then
+            echo "::error::RustDesk executable is missing from the installed app."
             exit 1
           fi
 
-          # VNC legacy authentication supports only the first eight password characters.
-          VNC_PASS_SHORT="${VNC_PASSWORD:0:8}"
-          sudo "$KICKSTART" \
-            -activate \
-            -configure -access -on \
-            -configure -allowAccessFor -allUsers \
-            -configure -privs -all \
-            -configure -clientopts -setvnclegacy -vnclegacy yes -setvncpw -vncpw "$VNC_PASS_SHORT" \
-            -restart -agent -menu
-
-          # Use the same legacy Screen Sharing activation sequence as known
-          # macOS VNC workflows; launchctl load installs the socket listener.
-          sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null || true
-          sudo launchctl enable system/com.apple.screensharing || true
-          sudo launchctl bootstrap system /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null || true
-          sudo launchctl kickstart -k system/com.apple.screensharing || true
+          echo "Installed RustDesk ${VERSION}."
+          open -a "$APP" || true
           sleep 5
 
-          TAILSCALE_IP="$(tailscale ip -4 | head -n 1)"
-          if [[ -z "$TAILSCALE_IP" ]]; then
-            echo "::error::Tailscale did not assign a private IP."
+          # RustDesk requires an elevated CLI for permanent-password setup on macOS.
+          RUSTDESK_PASSWORD="$(openssl rand -hex 12)"
+          echo "::add-mask::${RUSTDESK_PASSWORD}"
+          echo "RUSTDESK_PASSWORD=${RUSTDESK_PASSWORD}" >> "$GITHUB_ENV"
+
+          PASSWORD_RESULT="$(sudo "$RUSTDESK_BIN" --password "$RUSTDESK_PASSWORD" 2>/dev/null || true)"
+          if [[ "$PASSWORD_RESULT" != *"Done!"* ]]; then
+            echo "::error::RustDesk rejected permanent-password setup. No credentials artifact will be published."
             exit 1
           fi
-          echo "TAILSCALE_IP=$TAILSCALE_IP" >> "$GITHUB_ENV"
-          printf 'os=macOS\nhostname=%s\ntailscale_ip=%s\n' "$(hostname)" "$TAILSCALE_IP" > "$RUNNER_TEMP/macos-runner-info.txt"
-          echo "MACOS_RUNNER_HOSTNAME=$(hostname)"
-          echo "MACOS_RUNNER_TAILSCALE_IP=$TAILSCALE_IP"
+          echo "RustDesk permanent password configured."
 
-          echo "=== Port 5900 listener ==="
-          lsof -nP -iTCP:5900 -sTCP:LISTEN || true
-
-          # Verify that the service actually sends an RFB greeting, not just that
-          # TCP accepts a connection.
-          ready=0
-          for _ in $(seq 1 20); do
-            reply="$(timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/5900; head -c 12 <&3' 2>/dev/null || true)"
-            if [[ "$reply" == RFB* ]]; then ready=1; break; fi
-            sleep 1
+          RUSTDESK_ID=""
+          for attempt in $(seq 1 18); do
+            RUSTDESK_ID="$(sudo "$RUSTDESK_BIN" --get-id 2>/dev/null | tr -d '\r\n' || true)"
+            if [[ "$RUSTDESK_ID" =~ ^[0-9]{6,12}$ ]]; then
+              break
+            fi
+            RUSTDESK_ID=""
+            sleep 5
           done
-          if [[ "$ready" == "1" ]]; then
-            echo "MACOS_VNC_READY=1" >> "$GITHUB_ENV"
-            echo "PASS: Screen Sharing sent RFB greeting: $reply"
-          else
-            echo "MACOS_VNC_READY=0" >> "$GITHUB_ENV"
-            echo "::error::Native macOS VNC is unavailable: the GitHub-hosted VM has no active Screen Sharing listener on port 5900."
-            echo "::error::kickstart/launchctl activation did not start screensharingd. macOS screen-capture authorization must be enabled interactively or through supported device management."
-            sudo launchctl print system/com.apple.screensharing || true
-            {
-              echo
-              echo "## FAILURE: macOS VNC did not start"
-              echo
-              echo "- No RFB greeting was received from 127.0.0.1:5900."
-              echo "- `screensharingd` was not running after activation attempts."
-              echo "- The workflow is stopping now instead of consuming the full session timeout."
-              echo "- A usable macOS desktop requires a runner where Screen Sharing/screen-capture permissions are available."
-            } >> "$GITHUB_STEP_SUMMARY"
+          if [[ ! "$RUSTDESK_ID" =~ ^[0-9]{6,12}$ ]]; then
+            echo "::error::RustDesk did not obtain a numeric relay ID within 90 seconds."
+            grep -Eiv 'password|secret|token|key' /tmp/rustdesk.log 2>/dev/null | tail -60 || true
             exit 1
           fi
 
-          {
-            echo "## macOS runner — private Tailscale access"
-            echo
-            echo "- Runner: macOS 15 / Apple Silicon"
-            echo "- Tailscale IP: $TAILSCALE_IP"
-            echo "- VNC address for TigerVNC: ${TAILSCALE_IP}::5900"
-            echo "- VNC password: first 8 characters of the VNC_PASSWORD secret"
-            echo "- Session duration: $SESSION_MINUTES minutes"
-            echo
-            echo "The services are intended for private Tailscale access only. Do not expose them through a public tunnel."
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo "RUSTDESK_ID=${RUSTDESK_ID}" >> "$GITHUB_ENV"
+          echo "RustDesk registered an ID successfully."
+          echo "MACOS_DESKTOP_READY=1" >> "$GITHUB_ENV"
 
-
-      - name: Enable SSH on the private Tailscale address
+      - name: Encrypt and upload connection credentials
         shell: bash
         run: |
           set -euo pipefail
-          TAILSCALE_IP="$(tailscale ip -4 | head -n 1)"
-          SSH_USER="$(id -un)"
-          KEY_BASE="$RUNNER_TEMP/macos-runner-ssh"
-
-          # Generate a short-lived ed25519 key; encrypt the downloadable private key
-          # with the existing VNC_PASSWORD secret before uploading it.
-          ssh-keygen -q -t ed25519 -N "" -C "GitHub macOS runner $GITHUB_RUN_ID" -f "$KEY_BASE"
-          install -d -m 700 "$HOME/.ssh"
-          touch "$HOME/.ssh/authorized_keys"
-          chmod 600 "$HOME/.ssh/authorized_keys"
-          cat "$KEY_BASE.pub" >> "$HOME/.ssh/authorized_keys"
-
-          # The service is bound to the private Tailscale IP only; avoid
-          # systemsetup/launchctl operations that can stall in headless hosted VMs.
-          sudo install -d -m 0755 /var/empty
-          sudo /usr/sbin/sshd -t
-          sudo nohup /usr/sbin/sshd -D \
-            -o "ListenAddress=$TAILSCALE_IP" \
-            -o "PermitRootLogin=no" \
-            -o "PasswordAuthentication=no" \
-            -o "KbdInteractiveAuthentication=no" \
-            -o "PubkeyAuthentication=yes" \
-            -o "AllowUsers=$SSH_USER" \
-            >>"$RUNNER_TEMP/sshd.log" 2>&1 </dev/null &
-
-          ready=0
-          for _ in $(seq 1 20); do
-            if nc -z -w 2 "$TAILSCALE_IP" 22; then ready=1; break; fi
-            sleep 1
-          done
-          if [[ "$ready" != 1 ]]; then
-            cat "$RUNNER_TEMP/sshd.log" || true
-            echo "::error::SSH did not listen on the Tailscale IP $TAILSCALE_IP:22."
-            exit 1
-          fi
-
-          if [[ -z "$VNC_PASSWORD" || ${#VNC_PASSWORD} -lt 8 ]]; then
-            echo "::error::VNC_PASSWORD must be set and contain at least 8 characters to encrypt the SSH key."
-            exit 1
-          fi
-          ssh-keygen -p -P "" -N "$VNC_PASSWORD" -f "$KEY_BASE" >/dev/null
-          echo "MACOS_SSH_KEY_PATH=$KEY_BASE" >> "$GITHUB_ENV"
-          echo "MACOS_SSH_USER=$SSH_USER" >> "$GITHUB_ENV"
-
+          umask 077
+          OUT="$RUNNER_TEMP/macos-rustdesk-credentials"
+          PLAINTEXT="$RUNNER_TEMP/connection-info.txt"
+          mkdir -p "$OUT"
+          cat > "$PLAINTEXT" <<EOF
+          RUSTDESK_ID=${RUSTDESK_ID}
+          RUSTDESK_PASSWORD=${RUSTDESK_PASSWORD}
+          SESSION_MINUTES=${SESSION_MINUTES}
+          EOF
+          openssl enc -aes-256-cbc -pbkdf2 -salt \
+            -pass env:VNC_PASSWORD \
+            -in "$PLAINTEXT" \
+            -out "$OUT/connection-info.txt.enc"
+          rm -f "$PLAINTEXT"
+          chmod 600 "$OUT/connection-info.txt.enc"
           {
+            echo "## macOS desktop is ready"
             echo
-            echo "### Private SSH access"
+            echo "- Runner: macOS 15 / Apple Silicon (M1)"
+            echo "- Remote access: RustDesk relay"
+            echo "- Session duration: ${SESSION_MINUTES} minutes"
+            echo "- Download artifact: macos-rustdesk-credentials-${GITHUB_RUN_ID}"
+            echo "- The credential artifact is encrypted with repository secret VNC_PASSWORD; the password is not printed in logs."
             echo
-            echo "- SSH address: ${SSH_USER}@${TAILSCALE_IP} (port 22, Tailscale IP only)"
-            echo "- Download artifact: macos-tailscale-ssh-key-${GITHUB_RUN_ID}"
-            echo "- The private key is encrypted; use the full VNC_PASSWORD secret as its passphrase."
-            echo "- Debian command after extracting the artifact: chmod 600 macos-runner-ssh && ssh -i macos-runner-ssh ${SSH_USER}@${TAILSCALE_IP}"
+            echo "On Debian, use the one-click launcher to download/decrypt credentials and open RustDesk. Closing RustDesk does not stop this workflow."
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "PASS: SSH is listening on the private Tailscale IP $TAILSCALE_IP:22."
 
-      - name: Upload encrypted macOS SSH key
-        continue-on-error: true
+      - name: Upload encrypted RustDesk credentials
         uses: actions/upload-artifact@v4
         with:
-          name: macos-tailscale-ssh-key-${{ github.run_id }}
-          path: ${{ runner.temp }}/macos-runner-ssh
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Upload verified macOS runner address
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-runner-address-${{ github.run_id }}
-          path: ${{ runner.temp }}/macos-runner-info.txt
+          name: macos-rustdesk-credentials-${{ github.run_id }}
+          path: $RUNNER_TEMP/macos-rustdesk-credentials/connection-info.txt.enc
           if-no-files-found: error
           retention-days: 1
 
       - name: Keep macOS desktop alive
         shell: bash
         run: sleep "$((SESSION_MINUTES * 60))"
-
-      - name: Disable Screen Sharing
-        if: always()
-        shell: bash
-        run: |
-          KICKSTART="/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart"
-          if [[ -x "$KICKSTART" ]]; then
-            sudo "$KICKSTART" -deactivate -configure -access -off || true
-          fi
