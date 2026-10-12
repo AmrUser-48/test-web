@@ -50,7 +50,7 @@ jobs:
           required = {
               "macOS workflow target": '"macos-chatgpt-vnc.yml"' in launcher,
               "Ubuntu workflow target": '"temporary-core2-build-runner-vnc.yml"' in launcher,
-              "fresh unique runner hostname matching": '"github-core2"' in launcher and '"github-macos"' in launcher,
+              "Core 2 peer matching and RustDesk artifact targeting": '"github-core2"' in launcher and 'RUSTDESK_ARTIFACT_PREFIX' in launcher,
               "saved VNC password file": '"-passwd", str(VNC_PASS_FILE)' in launcher,
               "viewer exit leaves remote workflow alive": "Closing or crashing TigerVNC will NOT stop the remote workflow." in launcher and "The remote workflow remains active until its configured timeout." in launcher and "Close the VNC viewer or press Ctrl+C here to stop this workflow." not in launcher,
               "token saved with restrictive permissions": 'os.chmod(TOKEN_FILE, 0o600)' in launcher,
@@ -70,7 +70,13 @@ jobs:
               "state snapshot before service shutdown": workflow.index("Snapshot and encrypt desktop state") < workflow.index("Stop VNC and SSH services"),
               "docs explain password persistence": "no VNC password prompt" in docs,
               "macOS workflow is manual-only": "push:" not in macos_workflow,
-              "macOS workflow fails fast if VNC is unavailable": 'echo "::error::Native macOS VNC is unavailable:' in macos_workflow and "No RFB greeting was received" in macos_workflow and "FAILURE: macOS VNC did not start" in macos_workflow,
+              "macOS workflow uses Apple Silicon runner": "runs-on: macos-15" in macos_workflow,
+              "macOS workflow installs current RustDesk ARM64 app": "rustdesk-1.5.0-aarch64.dmg" in macos_workflow and "Install and verify RustDesk" in macos_workflow,
+              "macOS workflow avoids native Screen Sharing": "screensharingd" not in macos_workflow and "RFB" not in macos_workflow and "kickstart" not in macos_workflow,
+              "macOS connection credentials are encrypted": "openssl enc -aes-256-cbc -pbkdf2 -salt" in macos_workflow and "-pass env:VNC_PASSWORD" in macos_workflow and "macos-rustdesk-credentials-" in macos_workflow and "github.run_id" in macos_workflow,
+              "launcher decrypts the artifact locally": "StripCrossHostAuthorizationRedirect" in launcher and '"openssl", "enc", "-d", "-aes-256-cbc", "-pbkdf2", "-salt"' in launcher,
+              "macOS no longer requires Tailscale or TigerVNC": 'if target["connection"] == "rustdesk":' in launcher and 'require_command("rustdesk")' in launcher,
+              "installer checks RustDesk without auto-installing": 'command -v rustdesk' in installer and "apt install" not in installer,
           }
           for name, passed in required.items():
               print(("PASS" if passed else "FAIL") + ": " + name)
