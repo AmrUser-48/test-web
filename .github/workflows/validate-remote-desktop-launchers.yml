@@ -71,7 +71,7 @@ jobs:
               "docs explain password persistence": "no VNC password prompt" in docs,
               "macOS workflow is manual-only": "push:" not in macos_workflow,
               "macOS workflow uses Apple Silicon runner": "runs-on: macos-15" in macos_workflow,
-              "macOS workflow installs current RustDesk ARM64 app": "rustdesk-1.5.0-aarch64.dmg" in macos_workflow and "Install and verify RustDesk" in macos_workflow,
+              "macOS workflow installs current RustDesk ARM64 app": 'VERSION="1.5.0"' in macos_workflow and "aarch64.dmg" in macos_workflow and "Install and verify RustDesk" in macos_workflow,
               "macOS workflow avoids native Screen Sharing": "screensharingd" not in macos_workflow and "RFB" not in macos_workflow and "kickstart" not in macos_workflow,
               "macOS connection credentials are encrypted": "openssl enc -aes-256-cbc -pbkdf2 -salt" in macos_workflow and "-pass env:VNC_PASSWORD" in macos_workflow and "macos-rustdesk-credentials-" in macos_workflow and "github.run_id" in macos_workflow,
               "launcher decrypts the artifact locally": "StripCrossHostAuthorizationRedirect" in launcher and '"openssl", "enc", "-d", "-aes-256-cbc", "-pbkdf2", "-salt"' in launcher,
