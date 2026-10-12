@@ -1,9 +1,6 @@
 name: Temporary macOS ChatGPT Desktop (M1, RustDesk)
 
 on:
-  push:
-    paths:
-      - ".github/workflows/macos-chatgpt-vnc.yml"
   workflow_dispatch:
     inputs:
       session_minutes:
