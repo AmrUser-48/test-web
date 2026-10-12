@@ -388,6 +388,8 @@ def main() -> int:
                         help="replace the locally saved Ubuntu VNC password file")
     parser.add_argument("--setup-vnc-password", action="store_true",
                         help="save or reset the local Ubuntu VNC password file, then exit")
+    parser.add_argument("--reuse-run-id", type=int,
+                        help="connect to an already-active macOS RustDesk session by workflow run ID; do not start another runner")
     args = parser.parse_args()
     target = TARGETS[args.target]
     if SESSION_MINUTES not in {"30", "60", "180", "300", "350"}:
@@ -434,32 +436,44 @@ def main() -> int:
             "or use a token owned by an account that already has write access."
         )
 
-    workflow_path = urllib.parse.quote(target["workflow"], safe="")
-    runs_path = f"/repos/{REPO}/actions/workflows/{workflow_path}/runs?per_page=20"
-    runs_before = github_api("GET", runs_path)
-    old_ids = {int(item["id"]) for item in runs_before.get("workflow_runs", [])}
+    if args.reuse_run_id is not None:
+        if target["connection"] != "rustdesk":
+            die("--reuse-run-id is supported only for the macOS RustDesk desktop.")
+        info = run_status(args.reuse_run_id)
+        if not info or info.get("path") != ".github/workflows/macos-chatgpt-vnc.yml":
+            die(f"Run {args.reuse_run_id} is not the macOS RustDesk workflow for {REPO}.")
+        if info.get("status") != "in_progress":
+            die(f"Run {args.reuse_run_id} is not active (status: {info.get('status')}, conclusion: {info.get('conclusion')}).")
+        RUN_ID = args.reuse_run_id
+        run = info
+        say(f"Reusing active macOS desktop run {RUN_ID}; no additional runner will be started.")
+    else:
+        workflow_path = urllib.parse.quote(target["workflow"], safe="")
+        runs_path = f"/repos/{REPO}/actions/workflows/{workflow_path}/runs?per_page=20"
+        runs_before = github_api("GET", runs_path)
+        old_ids = {int(item["id"]) for item in runs_before.get("workflow_runs", [])}
 
-    say(f"Starting {target['label']} workflow for {SESSION_MINUTES} minutes…")
-    github_api(
-        "POST", f"/repos/{REPO}/actions/workflows/{workflow_path}/dispatches",
-        {"ref": BRANCH, "inputs": {"session_minutes": SESSION_MINUTES}},
-    )
+        say(f"Starting {target['label']} workflow for {SESSION_MINUTES} minutes…")
+        github_api(
+            "POST", f"/repos/{REPO}/actions/workflows/{workflow_path}/dispatches",
+            {"ref": BRANCH, "inputs": {"session_minutes": SESSION_MINUTES}},
+        )
 
-    deadline = time.monotonic() + 90
-    run = None
-    while time.monotonic() < deadline:
-        recent = github_api("GET", runs_path)
-        possible = [
-            x for x in recent.get("workflow_runs", [])
-            if int(x["id"]) not in old_ids and x.get("event") == "workflow_dispatch"
-        ]
-        if possible:
-            run = max(possible, key=lambda x: x.get("created_at", ""))
-            RUN_ID = int(run["id"])
-            break
-        time.sleep(3)
-    if not run or RUN_ID is None:
-        die(f"GitHub accepted dispatch but the run ID did not appear. Check https://github.com/{REPO}/actions")
+        deadline = time.monotonic() + 90
+        run = None
+        while time.monotonic() < deadline:
+            recent = github_api("GET", runs_path)
+            possible = [
+                x for x in recent.get("workflow_runs", [])
+                if int(x["id"]) not in old_ids and x.get("event") == "workflow_dispatch"
+            ]
+            if possible:
+                run = max(possible, key=lambda x: x.get("created_at", ""))
+                RUN_ID = int(run["id"])
+                break
+            time.sleep(3)
+        if not run or RUN_ID is None:
+            die(f"GitHub accepted dispatch but the run ID did not appear. Check https://github.com/{REPO}/actions")
 
     run_url = run.get("html_url") or f"https://github.com/{REPO}/actions/runs/{RUN_ID}"
     say(f"Workflow run: {run_url}")
