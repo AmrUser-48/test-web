@@ -1,26 +1,27 @@
-# One-click macOS and Ubuntu VNC runner launchers
+# One-click macOS RustDesk and Ubuntu VNC desktop launchers
 
-The Python launcher in this directory can start either:
-- the temporary macOS workflow, or
-- the Ubuntu 24.04 Core 2 XFCE desktop workflow.
+The Python launcher starts either the temporary macOS 15 Apple Silicon desktop over RustDesk, or the Ubuntu 24.04 Core 2 XFCE desktop over VNC.
 
-It waits for the Tailscale peer belonging to that exact workflow run, checks that it identifies as the expected operating system, verifies an actual VNC/RFB greeting on port 5900, and only then starts TigerVNC. It does not choose an old IP or the wrong OS.
-
-## Automated validation
-
-The repository workflow [Validate remote desktop launchers](../../actions/workflows/validate-remote-desktop-launchers.yml) checks Python syntax, installer shell syntax, launcher target selection, VNC password-file handling, and the Ubuntu desktop persistence/theme configuration on changes.
+The macOS workflow no longer tries Apple's native Screen Sharing service. That approach failed on the hosted macOS VM because the service never provided an RFB greeting. Instead, it starts RustDesk and registers a remote ID.
 
 ## Local requirements
 
-- Python 3 (standard library only)
+For **macOS desktop**:
+- Python 3 and OpenSSL
+- RustDesk client installed on Debian 12
+
+Official Debian 12 x86_64 package: https://github.com/rustdesk/rustdesk/releases/download/1.5.0/rustdesk-1.5.0-x86_64.deb
+
+For **Ubuntu Core 2 VNC**:
 - Tailscale CLI, already installed and connected to your tailnet
 - TigerVNC `vncviewer`
-- `vncpasswd` or `tigervncpasswd`, needed once to create the local VNC password file
+- `vncpasswd` or `tigervncpasswd`, needed once for the local VNC password file
 
-This tool does not use or install Git, GitHub CLI (`gh`), curl, jq, Node.js, Docker, or Python packages. The installer does not run apt.
+The installer checks for these commands but does not install packages or run apt. If only Ubuntu's password-file helper is missing, install `tigervnc-tools` once:
 
-If only the password-file helper is missing, install this small package once:
-`sudo apt install tigervnc-tools`
+```sh
+sudo apt install tigervnc-tools
+```
 
 ## Install the desktop icons
 
@@ -30,53 +31,47 @@ From this directory:
 bash install-desktop-launcher.sh
 ```
 
-This copies the Python launcher to `~/.local/bin` and creates two icons on your desktop:
+This installs the Python launcher to `~/.local/bin` and creates:
 - `Launch macOS ChatGPT Runner.desktop`
 - `Launch Ubuntu Core2 VNC Runner.desktop`
 
 The Ubuntu option uses `.github/workflows/temporary-core2-build-runner-vnc.yml`, which provides the XFCE desktop with Arc-Dark and the right-side vertical deskbar.
 
-## First launch
+## First launch and secrets
 
-A GitHub personal access token is needed to dispatch and cancel workflows. Start with a fine-grained token scoped to `AmrUser-48/test-web` with **Actions: Read and write**:
+A GitHub personal access token is needed to dispatch workflows. Start with a fine-grained token scoped to `AmrUser-48/test-web` with **Actions: Read and write**:
 https://github.com/settings/personal-access-tokens/new
 
-If GitHub still returns `403 Resource not accessible by personal access token` despite those permissions, use a **classic PAT with the `repo` scope** instead. The same error has been reported for correctly permissioned fine-grained tokens; this workaround has been reported to work. A classic `repo` token grants broader repository access, so keep it private and use it only if the fine-grained token fails. GitHub's endpoint requirements are documented here: https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event
+If GitHub still returns `403 Resource not accessible by personal access token`, the token-owning account must have write access to the repository. A classic PAT with `repo` scope is a broader-permission fallback; keep it private. The API requirements are documented at https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event.
 
-The launcher prompts for the token without echoing it and saves it to `~/.config/macos-runner-launcher/token` with mode `0600`. To replace a saved token, remove that file and run the launcher again:
+The launcher prompts for the token without echoing it and saves it to `~/.config/macos-runner-launcher/token` with mode `0600`. To replace it:
+
 ```sh
 rm -f ~/.config/macos-runner-launcher/token
-python3 ~/.local/bin/macos-runner-one-click.py --target ubuntu
+python3 ~/.local/bin/macos-runner-one-click.py --target macos
 ```
 
-It also prompts once for the same `VNC_PASSWORD` configured in the repository's Actions secrets. It writes a TigerVNC-compatible password file to `~/.config/tigervnc/runner-passwd` (directory mode `0700`, file mode `0600`). Subsequent connections use that file through `vncviewer -passwd`, so no VNC password prompt is shown. If the repository secret changes, run:
+The repository Actions secret `VNC_PASSWORD` is required by both workflows. For macOS, it encrypts the temporary RustDesk credentials artifact because this repository is public. Use a strong, random password (preferably 20+ characters). The launcher asks for this secret with hidden input, downloads the matching run's encrypted artifact, decrypts it locally using OpenSSL, and then opens RustDesk. The RustDesk password is shown only in your local terminal, not in GitHub logs or an unencrypted artifact.
 
-```sh
-python3 ~/.local/bin/macos-runner-one-click.py --setup-vnc-password --reset-vnc-password
-```
+For Ubuntu, the same `VNC_PASSWORD` configures VNC. The launcher writes a TigerVNC-compatible password file to `~/.config/tigervnc/runner-passwd` (directory mode `0700`, file mode `0600`). This local VNC password file is obfuscated by TigerVNC, not strongly encrypted.
 
-The VNC password file is obfuscated by TigerVNC, not strongly encrypted. Keep the file private; the owner-only permissions are important. VNC authentication stays enabled; the launcher does not switch the server to unauthenticated VNC.
+## macOS desktop workflow
 
-## Saved Ubuntu desktop state
+1. Start the macOS icon or run `python3 ~/.local/bin/macos-runner-one-click.py --target macos`.
+2. Enter the `VNC_PASSWORD` Actions secret when prompted, then your GitHub token if it is not saved.
+3. The workflow starts a macOS 15 Apple Silicon runner, opens Chrome at ChatGPT, installs RustDesk, creates an ephemeral ID/password, and uploads the credentials encrypted with `VNC_PASSWORD`.
+4. The launcher decrypts the artifact locally and opens RustDesk. Enter the displayed ID in RustDesk and supply the displayed password.
+5. Closing RustDesk does **not** stop the remote workflow. Cancel the Actions run to stop the session early; otherwise it ends at the selected timeout (350 minutes by default).
 
-The Ubuntu workflow now saves the user's home directory and GitHub workspace between sessions, including:
-- XFCE panel/theme preferences and manual layout changes
-- Chrome profile, cookies, and browser state
-- Files and project changes under the home/workspace directories
+The credential artifact expires after one day. The generated connection password is different on every run.
 
-It excludes per-run SSH/VNC credential files, temporary GitHub workflow files, downloaded action code, trash, and disposable caches. Before starting the next session it restores an encrypted archive from GitHub Actions cache; if that cache is unavailable, it automatically downloads the latest retained encrypted backup artifact. At the end, it stores a new encrypted cache entry and uploads an encrypted backup artifact with 30-day retention, then removes older state artifacts so only the newest backup consumes artifact storage. The archive is encrypted with the existing `TAILSCALE_AUTHKEY` secret; the auth key must remain unchanged to decrypt an existing snapshot.
+**Testing status:** this RustDesk path is the replacement for the failed macOS Screen Sharing attempt. It still needs a successful end-to-end run to confirm that the hosted macOS VM permits live screen capture and input through RustDesk. If the workflow fails during RustDesk setup, use the Actions log for that run; do not repeat the old native VNC setup.
 
-GitHub may evict caches after 7 days without access or due to its storage limit, so the 30-day encrypted artifact is the fallback. This is not permanent storage: download separately anything that must survive beyond the artifact's retention period. The repository `xtr-dev/mcp-playwright-novnc` describes a persistent service, but its current Compose example does not mount a persistent volume; browser/profile files do not survive container removal unless a volume or backup mechanism is configured.
+## Ubuntu desktop state
 
-## Behaviour and timeouts
+The Ubuntu workflow saves the user's home directory and GitHub workspace between sessions, including XFCE preferences, Chrome profile/cookies, files, and projects. It excludes per-run SSH/VNC credentials, temporary workflow files, downloaded action code, trash, and disposable caches. At session end it saves an encrypted cache entry and uploads an encrypted backup artifact, removing older state artifacts to control storage use. The archive is encrypted with `TAILSCALE_AUTHKEY`; that secret must remain unchanged to decrypt existing snapshots.
 
-1. Dispatches the chosen workflow for 350 minutes by default.
-2. Looks for a new peer named `github-macos-<run-id>` or `github-core2-<run-id>`.
-3. Checks the peer's OS and verifies VNC speaks RFB on port 5900.
-4. Opens `vncviewer` using the saved local password file.
-5. If TigerVNC closes or crashes, the GitHub-hosted runner stays alive until its configured session timeout; the launcher prints the VNC address and reconnect instructions. Press Ctrl+C in the launcher terminal to explicitly cancel the remote workflow.
-
-**Known limitation — GitHub-hosted macOS VNC:** run #16 confirmed that the macOS 15 Apple Silicon VM did not start Apple's Screen Sharing service: `MACOS_VNC_READY=0`, no RFB greeting on port 5900, and `screensharingd` reported `not running` after the `kickstart`/ `launchctl` attempts. The workflow now fails immediately instead of appearing ready and idling for the full session duration. The log also showed `actions/upload-artifact@v4` returning `ENOTFOUND` for both SSH-key and address uploads; that is a separate GitHub artifact-service/DNS failure and should not be confused with the VNC failure. A fully working native macOS desktop requires a macOS runner where Screen Sharing/screen-capture permissions are available. For a working graphical session on the current setup, use the Ubuntu VNC workflow.
+GitHub may evict caches after 7 days without access or because of storage limits, so the retained encrypted artifact is the fallback. This is not permanent storage: download anything important separately.
 
 ## Remove local launcher files
 
