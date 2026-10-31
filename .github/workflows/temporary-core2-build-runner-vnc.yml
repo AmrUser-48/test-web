@@ -174,7 +174,7 @@ jobs:
               if [[ -e "$HOME/.nvm" || -L "$HOME/.nvm" ]]; then
                 sudo rm -rf -- "$HOME/.nvm"
               fi
-              if timeout --signal=TERM --kill-after=10s 180s cp -a "$restore_dir/." "$HOME/";
+              if timeout --signal=TERM --kill-after=10s 180s cp -a "$restore_dir/." "$HOME/"; then
                 echo "DESKTOP_STATE_RESTORED=1" >> "$GITHUB_ENV"
                 echo "Restored encrypted XFCE settings, Chrome profile, Desktop, Documents, Downloads, and workspace files."
               else
