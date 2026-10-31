@@ -45,7 +45,6 @@ jobs:
           docs = Path("scripts/macos-runner-launcher/README.md").read_text()
           workflow = Path(".github/workflows/temporary-core2-build-runner-vnc.yml").read_text()
           macos_workflow = Path(".github/workflows/macos-chatgpt-vnc.yml").read_text()
-          restore_step = workflow.split("- name: Restore desktop, browser profile, and files", 1)[1].split("- name: Install Core 2 build tools", 1)[0]
 
           required = {
               "macOS workflow target": '"macos-chatgpt-vnc.yml"' in launcher,
@@ -58,16 +57,12 @@ jobs:
               "no automatic apt installs in installer": "apt-get install" not in installer and "apt install" not in installer,
               "Arc-Dark theme": "Arc-Dark" in workflow,
               "right-side vertical deskbar": "mode int 2" in workflow and "p=2;x=0;y=0" in workflow,
-              "encrypted desktop state": "openssl enc -aes-256-cbc -pbkdf2 -salt" in workflow,
-              "cache restoration": "actions/cache/restore@v4" in workflow,
-              "push recovery skips legacy cache": "if: github.event_name != 'push'" in workflow,
-              "push recovery skips old backup artifact": "github.event_name != 'push' && steps.cached-state.outputs.available != 'true'" in workflow,
-              "backup artifact fallback": "actions/download-artifact@v4" in workflow,
-              "state restore directory outside home": 'restore_dir="/tmp/core2-vnc-state-restore-$GITHUB_RUN_ID"' in restore_step,
-              "state extraction has process-group timeout": "timeout --signal=TERM --kill-after=10s 240s bash -o pipefail -c" in restore_step and "timeout --foreground --signal" not in restore_step,
-              "state copy has timeout": 'timeout --signal=TERM --kill-after=10s 180s cp -a' in restore_step,
-              "future snapshots exclude runner tool cache": "--exclude='./work/_tool'" in workflow,
-              "state snapshot before service shutdown": workflow.index("Snapshot and encrypt desktop state") < workflow.index("Stop VNC and SSH services"),
+              "desktop-state cache restore removed": "actions/cache/restore@v4" not in workflow,
+              "desktop-state cache save removed": "actions/cache/save@v4" not in workflow,
+              "desktop-state restore removed": "Restore desktop, browser profile, and files" not in workflow,
+              "desktop-state snapshot and backup removed": "Snapshot and encrypt desktop state" not in workflow and "Upload encrypted desktop-state backup" not in workflow,
+              "every session starts with a clean desktop": "DESKTOP_STATE_RESTORED: '0'" in workflow,
+              "xstartup uses POSIX test syntax": 'if [ "${DESKTOP_STATE_RESTORED:-0}" != "1" ]; then' in workflow,
               "docs explain local credential handling": "This local VNC password file is obfuscated by TigerVNC" in docs and "decrypts it locally using OpenSSL" in docs,
               "macOS workflow is manual-only": "push:" not in macos_workflow,
               "macOS workflow uses Apple Silicon runner": "runs-on: macos-15" in macos_workflow,
