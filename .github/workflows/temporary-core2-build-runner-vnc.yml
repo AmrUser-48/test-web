@@ -20,8 +20,7 @@ permissions:
   actions: write
 
 concurrency:
-  # One-time clean-start group bypasses any wedged restore attempts.
-  group: temporary-core2-build-runner-vnc-clean-recovery
+  group: temporary-core2-build-runner-vnc
   cancel-in-progress: true
 
 jobs:
@@ -36,6 +35,7 @@ jobs:
       TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
       VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
       SESSION_MINUTES: ${{ inputs.session_minutes || '350' }}
+      DESKTOP_STATE_RESTORED: '0'
 
     steps:
       - name: Validate secrets
@@ -62,135 +62,6 @@ jobs:
         run: |
           set -euo pipefail
           sudo tailscale set --accept-dns=false
-
-      - name: Restore encrypted desktop-state cache
-        id: state-cache
-        if: github.event_name != 'push'
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ runner.temp }}/core2-vnc-state.tar.gz.enc
-          key: core2-vnc-state-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            core2-vnc-state-${{ runner.os }}-
-
-      - name: Check whether desktop cache restored a state file
-        id: cached-state
-        shell: bash
-        run: |
-          if [[ -s "$RUNNER_TEMP/core2-vnc-state.tar.gz.enc" ]]; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Find latest encrypted desktop backup artifact
-        id: latest-state
-        if: github.event_name != 'push' && steps.cached-state.outputs.available != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import urllib.request
-
-          output = os.environ["GITHUB_OUTPUT"]
-          values = {"run_id": "", "artifact_name": ""}
-          try:
-              request = urllib.request.Request(
-                  f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/actions/artifacts?per_page=100",
-                  headers={
-                      "Accept": "application/vnd.github+json",
-                      "Authorization": "Bearer " + os.environ["GH_TOKEN"],
-                      "X-GitHub-Api-Version": "2022-11-28",
-                      "User-Agent": "core2-vnc-state-restore",
-                  },
-              )
-              with urllib.request.urlopen(request, timeout=20) as response:
-                  artifacts = json.load(response).get("artifacts", [])
-              for artifact in artifacts:
-                  if artifact.get("expired") or not artifact.get("name", "").startswith("core2-vnc-state-"):
-                      continue
-                  run = artifact.get("workflow_run") or {}
-                  current_name = f"core2-vnc-state-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
-                  if artifact.get("name") == current_name:
-                      continue
-                  if run.get("head_branch") != os.environ.get("GITHUB_REF_NAME"):
-                      continue
-                  values = {
-                      "run_id": str(run.get("id", "")),
-                      "artifact_name": artifact["name"],
-                  }
-                  break
-          except Exception as exc:
-              print("::warning::Could not locate previous encrypted state artifact: " + str(exc))
-          with open(output, "a", encoding="utf-8") as stream:
-              for key, value in values.items():
-                  stream.write(f"{key}={value}\n")
-          PY
-
-      - name: Download encrypted backup when cache is unavailable
-        if: github.event_name != 'push' && steps.cached-state.outputs.available != 'true' && steps.latest-state.outputs.artifact_name != ''
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ steps.latest-state.outputs.artifact_name }}
-          run-id: ${{ steps.latest-state.outputs.run_id }}
-          repository: ${{ github.repository }}
-          github-token: ${{ github.token }}
-          path: ${{ runner.temp }}
-
-      - name: Restore desktop, browser profile, and files
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive="$RUNNER_TEMP/core2-vnc-state.tar.gz.enc"
-          # IMPORTANT: never unpack under $HOME. The restored archive contains
-          # ./work, and RUNNER_TEMP itself lives under $HOME/work/_temp. Unpacking
-          # there makes the source overlap the destination during cp -a and can
-          # cause a huge recursive/slow copy. /tmp is outside $HOME.
-          restore_dir="/tmp/core2-vnc-state-restore-$GITHUB_RUN_ID"
-          rm -rf "$restore_dir"
-          mkdir -p "$restore_dir" "$HOME"
-          trap 'rm -rf "$restore_dir"' EXIT
-
-          if [[ -s "$archive" ]]; then
-            echo "Encrypted desktop-state archive: $(du -h "$archive" | cut -f1)"
-            echo "Free space before restore:"
-            df -h "$HOME" /tmp
-            echo "Extracting desktop state (hard limit: 240 seconds)..."
-            # Do NOT use timeout --foreground here. It signals only the direct
-            # shell and can leave tar/openssl running with the pipe held open.
-            if timeout --signal=TERM --kill-after=10s 240s bash -o pipefail -c '
-              openssl enc -d -aes-256-cbc -pbkdf2 -salt \
-                -pass env:TAILSCALE_AUTHKEY -in "$1" |
-                tar -xzf - -C "$2"
-            ' _ "$archive" "$restore_dir"; then
-              echo "Archive extraction finished. Staged size:"
-              du -sh "$restore_dir" || true
-              echo "Restoring files into runner home (hard limit: 180 seconds)..."
-              # Ubuntu runner images prepopulate ~/.nvm from /etc/skel with root-owned Git objects.
-              # Remove that image copy so the archived user-owned NVM tree can be restored cleanly.
-              if [[ -e "$HOME/.nvm" || -L "$HOME/.nvm" ]]; then
-                sudo rm -rf -- "$HOME/.nvm"
-              fi
-              if timeout --signal=TERM --kill-after=10s 180s cp -a "$restore_dir/." "$HOME/"; then
-                echo "DESKTOP_STATE_RESTORED=1" >> "$GITHUB_ENV"
-                echo "Restored encrypted XFCE settings, Chrome profile, Desktop, Documents, Downloads, and workspace files."
-              else
-                rc=$?
-                echo "::warning::Copying desktop state into HOME failed or exceeded 180 seconds (exit $rc). Continuing with a fresh desktop configuration."
-                echo "DESKTOP_STATE_RESTORED=0" >> "$GITHUB_ENV"
-              fi
-            else
-              rc=$?
-              echo "::warning::Could not extract/decrypt desktop-state archive (exit $rc or 240-second timeout); starting with a fresh desktop."
-              echo "DESKTOP_STATE_RESTORED=0" >> "$GITHUB_ENV"
-            fi
-          else
-            echo "No saved desktop state found; starting with the initial dark deskbar layout."
-            echo "DESKTOP_STATE_RESTORED=0" >> "$GITHUB_ENV"
-          fi
 
       - name: Install Core 2 build tools and private SSH/VNC services
         shell: bash
@@ -269,7 +140,7 @@ jobs:
 
           # Only seed Arc-Dark/right-side deskbar defaults on the first session.
           # On later sessions, leave the restored XFCE preferences untouched.
-          if [[ "${DESKTOP_STATE_RESTORED:-0}" != "1" ]]; then
+          if [ "${DESKTOP_STATE_RESTORED:-0}" != "1" ]; then
             set_xfconf xsettings /Net/ThemeName string Arc-Dark
             set_xfconf xfwm4 /general/theme string Arc-Dark
             set_xfconf xfce4-panel /panels/dark-mode bool true
@@ -408,117 +279,6 @@ jobs:
       - name: Keep SSH and VNC available
         shell: bash
         run: sleep "$((SESSION_MINUTES * 60))"
-
-      - name: Snapshot and encrypt desktop state
-        id: snapshot-state
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          state_file="$RUNNER_TEMP/core2-vnc-state.tar.gz.enc"
-          mkdir -p "$HOME/Desktop" "$HOME/Documents" "$HOME/Downloads"
-          mkdir -p "$HOME/.config/xfce4" "$HOME/.config/gtk-3.0" "$HOME/.config/google-chrome"
-
-          # Close Chrome cleanly before archiving its cookies/profile databases.
-          mapfile -t chrome_pids < <(pgrep -u "$(id -u)" -x chrome || true)
-          for pid in "${chrome_pids[@]}"; do
-            kill -TERM "$pid" 2>/dev/null || true
-          done
-          sleep 3
-          for pid in "${chrome_pids[@]}"; do
-            kill -KILL "$pid" 2>/dev/null || true
-          done
-          find "$HOME/.config/google-chrome" -maxdepth 2 -name 'Singleton*' -delete 2>/dev/null || true
-
-          # Save the whole user home, including the GitHub workspace under
-          # ~/work, so files and browser/session changes survive runner teardown.
-          # Exclude per-run SSH/VNC credentials, temporary workflow scripts,
-          # downloaded action code, and disposable download/build caches.
-          # The archive is encrypted before it enters the cache or artifact store.
-          tar --exclude='./.ssh' \
-              --exclude='./.vnc' \
-              --exclude='./.cache' \
-              --exclude='./work/_tool' \
-              --exclude='./.npm' \
-              --exclude='./.cargo/registry' \
-              --exclude='./.rustup/downloads' \
-              --exclude='./.local/share/Trash' \
-              --exclude='./work/_temp' \
-              --exclude='./work/_actions' \
-              --exclude='*/Cache/*' \
-              --exclude='*/Code Cache/*' \
-              --exclude='*/GPUCache/*' \
-              --exclude='*/ShaderCache/*' \
-              --exclude='*/BrowserMetrics/*' \
-              -C "$HOME" -czf - . |
-            openssl enc -aes-256-cbc -pbkdf2 -salt \
-              -pass env:TAILSCALE_AUTHKEY -out "$state_file"
-          chmod 600 "$state_file"
-          test -s "$state_file"
-          echo "Encrypted home, workspace, desktop, and browser state saved ($(du -h "$state_file" | cut -f1))."
-
-      - name: Save encrypted desktop-state cache
-        if: always() && steps.snapshot-state.outcome == 'success'
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ runner.temp }}/core2-vnc-state.tar.gz.enc
-          key: core2-vnc-state-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
-
-      - name: Upload encrypted desktop-state backup
-        id: upload-state
-        if: always() && steps.snapshot-state.outcome == 'success'
-        uses: actions/upload-artifact@v4
-        with:
-          name: core2-vnc-state-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/core2-vnc-state.tar.gz.enc
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Keep only the newest encrypted state backup
-        if: always() && steps.snapshot-state.outcome == 'success' && steps.upload-state.outcome == 'success'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CURRENT_ARTIFACT_NAME: core2-vnc-state-${{ github.run_id }}-${{ github.run_attempt }}
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import urllib.error
-          import urllib.request
-
-          repo = os.environ["GITHUB_REPOSITORY"]
-          token = os.environ["GH_TOKEN"]
-          current_name = os.environ["CURRENT_ARTIFACT_NAME"]
-          base = f"https://api.github.com/repos/{repo}/actions/artifacts"
-          headers = {
-              "Accept": "application/vnd.github+json",
-              "Authorization": "Bearer " + token,
-              "X-GitHub-Api-Version": "2022-11-28",
-              "User-Agent": "core2-vnc-state-prune",
-          }
-          try:
-              request = urllib.request.Request(base + "?per_page=100", headers=headers)
-              with urllib.request.urlopen(request, timeout=20) as response:
-                  artifacts = json.load(response).get("artifacts", [])
-              for artifact in artifacts:
-                  name = artifact.get("name", "")
-                  if not name.startswith("core2-vnc-state-") or name == current_name:
-                      continue
-                  delete = urllib.request.Request(
-                      base + "/" + str(artifact["id"]),
-                      data=b"",
-                      method="DELETE",
-                      headers=headers,
-                  )
-                  try:
-                      with urllib.request.urlopen(delete, timeout=20):
-                          print("Removed older encrypted state backup: " + name)
-                  except urllib.error.HTTPError as exc:
-                      print(f"::warning::Could not remove old backup {name}: HTTP {exc.code}")
-          except Exception as exc:
-              print("::warning::Could not prune old encrypted state backups: " + str(exc))
-          PY
 
       - name: Stop VNC and SSH services
         if: always()
