@@ -70,9 +70,9 @@ The credential artifact expires after one day. The generated connection password
 
 ## Ubuntu desktop state
 
-The Ubuntu workflow saves the user's home directory and GitHub workspace between sessions, including XFCE preferences, Chrome profile/cookies, files, and projects. It excludes per-run SSH/VNC credentials, temporary workflow files, downloaded action code, trash, and disposable caches. At session end it saves an encrypted cache entry and uploads an encrypted backup artifact, removing older state artifacts to control storage use. The archive is encrypted with `TAILSCALE_AUTHKEY`; that secret must remain unchanged to decrypt existing snapshots.
+The Ubuntu Core 2 VNC session starts with a **fresh desktop on every run**. XFCE applies the Arc-Dark theme and right-side deskbar defaults; no previous home directory, Chrome profile, cookies, workspace, or downloaded files are restored.
 
-GitHub may evict caches after 7 days without access or because of storage limits, so the retained encrypted artifact is the fallback. This is not permanent storage: download anything important separately.
+The workflow does not snapshot or upload desktop state at shutdown. Treat the runner as ephemeral: copy project files and anything important to a durable location (for example, GitHub) before the session ends.
 
 ## Remove local launcher files
 
