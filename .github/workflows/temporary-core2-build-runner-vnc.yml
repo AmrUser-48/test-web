@@ -169,7 +169,12 @@ jobs:
               echo "Archive extraction finished. Staged size:"
               du -sh "$restore_dir" || true
               echo "Restoring files into runner home (hard limit: 180 seconds)..."
-              if timeout --signal=TERM --kill-after=10s 180s cp -a "$restore_dir/." "$HOME/"; then
+              # Ubuntu runner images prepopulate ~/.nvm from /etc/skel with root-owned Git objects.
+              # Remove that image copy so the archived user-owned NVM tree can be restored cleanly.
+              if [[ -e "$HOME/.nvm" || -L "$HOME/.nvm" ]]; then
+                sudo rm -rf -- "$HOME/.nvm"
+              fi
+              if timeout --signal=TERM --kill-after=10s 180s cp -a "$restore_dir/." "$HOME/";
                 echo "DESKTOP_STATE_RESTORED=1" >> "$GITHUB_ENV"
                 echo "Restored encrypted XFCE settings, Chrome profile, Desktop, Documents, Downloads, and workspace files."
               else
